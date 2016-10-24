@@ -1,0 +1,40 @@
+*.py[cod]
+.*
+*.TODO
+_trial_temp
+*.sublime-project
+*.sublime-workspace
+!.gitignore
+
+# Certificates
+*.crt
+*.key
+*.pem
+
+# Packages
+*.egg
+*.egg-info
+*.so
+dist
+eggs
+parts
+pkg
+bin
+env
+var
+sdist
+develop-eggs
+.installed.cfg
+Vagrantfile
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+.coverage
+.tox
+nosetests.xml
+
+#Mr Developer
+.mr.developer.cfg
+benchmark
