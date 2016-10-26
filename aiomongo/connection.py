@@ -81,7 +81,7 @@ class Connection:
             flags = 4
         else:
             flags = 0
-        # Publish the original command document.
+
         spec = message._maybe_add_read_preference(spec, read_preference)
         if read_concern.level:
             spec['readConcern'] = read_concern.document
@@ -127,7 +127,7 @@ class Connection:
         while True:
             try:
                 await self._read_loop_step()
-            except (asyncio.IncompleteReadError, asyncio.CancelledError, ProtocolError) as e:
+            except (EOFError, asyncio.CancelledError, ProtocolError) as e:
                 logging.debug('Closing connection due to error: {}'.format(e))
                 self.close()
                 for ft in self.__request_futures.values():

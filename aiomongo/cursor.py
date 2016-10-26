@@ -1,3 +1,5 @@
+from collections import deque
+
 from bson.codec_options import DEFAULT_CODEC_OPTIONS
 from bson.son import SON
 from pymongo import helpers
@@ -39,7 +41,7 @@ class Cursor:
         self.__codec_options = DEFAULT_CODEC_OPTIONS
         self.__collection = collection
         self.__connection = connection
-        self.__data = None
+        self.__data = deque()
         self.__explain = False
         self.__max_scan = None
         self.__spec = spec
@@ -120,26 +122,21 @@ class Cursor:
 
     async def __anext__(self) -> dict:
 
-        if self.__data is not None:
-            doc = next(self.__data, None)
-            if doc is not None:
-                return doc
+        if len(self.__data):
+            return self.__data.popleft()
 
-        if self.__killed:
+        is_refereshed = await self._refresh()
+
+        if not is_refereshed:
             raise StopAsyncIteration
 
-        await self._refresh()
-
-        if self.__data is None:
-            raise StopAsyncIteration
-
-        doc = next(self.__data, None)
-        if doc is None:
-            raise StopAsyncIteration
-
-        return doc
+        return self.__data.popleft()
 
     async def _refresh(self) -> None:
+
+        if len(self.__data) or self.__killed:
+            return 0
+
         is_query = False
         if self.__id is None:
             is_query = True
@@ -164,14 +161,18 @@ class Cursor:
             else:
                 limit = self.__batch_size
 
-            data = await self.__connection.perform_operation(
-                _GetMore(self.__collection.database.name,
-                         self.__collection.name,
-                         limit,
-                         self.__id,
-                         self.__codec_options,
-                         self.__max_await_time_ms)
-            )
+            try:
+                data = await self.__connection.perform_operation(
+                    _GetMore(self.__collection.database.name,
+                             self.__collection.name,
+                             limit,
+                             self.__id,
+                             self.__codec_options,
+                             self.__max_await_time_ms)
+                )
+            except EOFError:
+                self.__killed = True
+                raise
         else:
             self.__killed = True
             self.__data = data = None
@@ -190,7 +191,7 @@ class Cursor:
                 documents = cursor['firstBatch']
             else:
                 documents = cursor['nextBatch']
-            self.__data = iter(documents)
+            self.__data = deque(documents)
 
             self.__retrieved += len(documents)
 
@@ -199,6 +200,8 @@ class Cursor:
 
         if self.__limit and self.__id and self.__limit <= self.__retrieved:
             await self.close()
+
+        return len(self.__data)
 
     async def __aenter__(self):
         return self
