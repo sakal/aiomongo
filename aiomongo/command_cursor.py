@@ -58,9 +58,9 @@ class CommandCursor:
           - `batch_size`: The size of each batch of results requested.
         """
         if not isinstance(batch_size, int):
-            raise TypeError("batch_size must be an integer")
+            raise TypeError('batch_size must be an integer')
         if batch_size < 0:
-            raise ValueError("batch_size must be >= 0")
+            raise ValueError('batch_size must be >= 0')
 
         self.__batch_size = batch_size == 1 and 2 or batch_size
         return self

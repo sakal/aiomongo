@@ -2,11 +2,11 @@ import collections
 from typing import Iterable, Optional, Union, List, Tuple, MutableMapping
 
 from bson import ObjectId
+from bson.code import Code
 from bson.son import SON
 from bson.codec_options import CodecOptions
-from pymongo import common, message
-from pymongo.helpers import (_check_write_command_response, _index_document,
-                             _index_list, _gen_index_name)
+from pymongo import common, helpers, message
+from pymongo.errors import ConfigurationError
 from pymongo.read_preferences import ReadPreference
 from pymongo.results import InsertManyResult, InsertOneResult
 
@@ -50,13 +50,91 @@ class Collection:
             self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options
         )
 
+    async def aggregate(self, pipeline: list, **kwargs) -> CommandCursor:
+        """Perform an aggregation using the aggregation framework on this
+        collection.
+
+        All optional aggregate parameters should be passed as keyword arguments
+        to this method. Valid options include, but are not limited to:
+
+          - `allowDiskUse` (bool): Enables writing to temporary files. When set
+            to True, aggregation stages can write data to the _tmp subdirectory
+            of the --dbpath directory. The default is False.
+          - `maxTimeMS` (int): The maximum amount of time to allow the operation
+            to run in milliseconds.
+          - `batchSize` (int): The maximum number of documents to return per
+            batch. Ignored if the connected mongod or mongos does not support
+            returning aggregate results using a cursor, or `useCursor` is
+            ``False``.
+
+        The :meth:`aggregate` method obeys the :attr:`read_preference` of this
+        :class:`Collection`. Please note that using the ``$out`` pipeline stage
+        requires a read preference of
+        :attr:`~pymongo.read_preferences.ReadPreference.PRIMARY` (the default).
+        The server will raise an error if the ``$out`` pipeline stage is used
+        with any other read preference.
+
+        :Parameters:
+          - `pipeline`: a list of aggregation pipeline stages
+          - `**kwargs` (optional): See list of options above.
+
+        :Returns:
+          A :class:`~aiomongo.command_cursor.CommandCursor` over the result
+          set.
+
+        .. _aggregate command:
+            http://docs.mongodb.org/manual/applications/aggregation
+        """
+
+        if not isinstance(pipeline, list):
+            raise TypeError('pipeline must be a list')
+
+        if 'explain' in kwargs:
+            raise ConfigurationError('The explain option is not supported. '
+                                     'Use Database.command instead.')
+
+        cmd = SON([('aggregate', self.name),
+                   ('pipeline', pipeline)])
+
+        # Remove things that are not command options.
+        batch_size = common.validate_positive_integer_or_none(
+            'batchSize', kwargs.pop("batchSize", None))
+
+        if 'cursor' not in kwargs:
+            kwargs['cursor'] = {}
+        if batch_size is not None:
+            kwargs['cursor']['batchSize'] = batch_size
+
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+
+        if connection.max_wire_version >= 4 and 'readConcern' not in cmd:
+            if pipeline and '$out' in pipeline[-1]:
+                result = await connection.command(
+                    self.database.name, cmd, self.read_preference, self.codec_options
+                )
+            else:
+                result = await connection.command(
+                    self.database.name, cmd, self.read_preference, self.codec_options,
+                    read_concern=self.read_concern
+                )
+        else:
+            result = await connection.command(
+                self.database.name, cmd, self.read_preference, self.codec_options
+            )
+
+        cursor = result['cursor']
+
+        return CommandCursor(connection, self, cursor).batch_size(batch_size or 0)
+
     async def count(self, filter: Optional[dict]=None, hint: Optional[Union[str, List[Tuple]]]=None,
                     limit: Optional[int]=None, skip: Optional[int]=None, max_time_ms: Optional[int]=None) -> int:
         cmd = SON([('count', self.name)])
         if filter is not None:
             cmd['query'] = filter
         if hint is not None and not isinstance(hint, str):
-            cmd['hint'] = _index_document(hint)
+            cmd['hint'] = helpers._index_document(hint)
         if limit is not None:
             cmd['limit'] = limit
         if skip is not None:
@@ -76,7 +154,7 @@ class Collection:
 
         return int(result["n"])
 
-    async def create_index(self, keys, **kwargs):
+    async def create_index(self, keys: Union[str, List[Tuple]], **kwargs) -> str:
         """Creates an index on this collection.
 
         Takes either a single key or a list of (key, direction) pairs.
@@ -90,18 +168,18 @@ class Collection:
         To create a single key ascending index on the key ``'mike'`` we just
         use a string argument::
 
-          >>> my_collection.create_index("mike")
+          >>> await my_collection.create_index("mike")
 
         For a compound index on ``'mike'`` descending and ``'eliot'``
         ascending we need to use a list of tuples::
 
-          >>> my_collection.create_index([("mike", pymongo.DESCENDING),
+          >>> await my_collection.create_index([("mike", pymongo.DESCENDING),
           ...                             ("eliot", pymongo.ASCENDING)])
 
         All optional index creation parameters should be passed as
         keyword arguments to this method. For example::
 
-          >>> my_collection.create_index([("mike", pymongo.DESCENDING)],
+          >>> await my_collection.create_index([("mike", pymongo.DESCENDING)],
           ...                            background=True)
 
         Valid options include, but are not limited to:
@@ -148,10 +226,10 @@ class Collection:
 
         .. mongodoc:: indexes
         """
-        keys = _index_list(keys)
-        name = kwargs.setdefault('name', _gen_index_name(keys))
+        keys = helpers._index_list(keys)
+        name = kwargs.setdefault('name', helpers._gen_index_name(keys))
 
-        index_doc = _index_document(keys)
+        index_doc = helpers._index_document(keys)
         index = {'key': index_doc}
         index.update(kwargs)
 
@@ -183,7 +261,7 @@ class Collection:
         """
         name = index_or_name
         if isinstance(index_or_name, list):
-            name = _gen_index_name(index_or_name)
+            name = helpers._gen_index_name(index_or_name)
 
         if not isinstance(name, str):
             raise TypeError('index_or_name must be an index name or list')
@@ -224,6 +302,54 @@ class Collection:
 
         return result
 
+    async def group(self, key: Optional[Union[List[str], str, Code]], condition: dict, initial: int, reduce: str,
+                    finalize: Optional[str]=None, **kwargs):
+        """Perform a query similar to an SQL *group by* operation.
+
+        Returns an array of grouped items.
+
+        The `key` parameter can be:
+
+          - ``None`` to use the entire document as a key.
+          - A :class:`list` of keys (each a :class:`str`) to group by.
+          - A :class:`str`, or :class:`~bson.code.Code` instance containing a JavaScript
+            function to be applied to each document, returning the key
+            to group by.
+
+        The :meth:`group` method obeys the :attr:`read_preference` of this
+        :class:`Collection`.
+
+        :Parameters:
+          - `key`: fields to group by (see above description)
+          - `condition`: specification of rows to be
+            considered (as a :meth:`find` query specification)
+          - `initial`: initial value of the aggregation counter object
+          - `reduce`: aggregation function as a JavaScript string
+          - `finalize`: function to be called on each object in output list.
+          - `**kwargs` (optional): additional arguments to the group command
+            may be passed as keyword arguments to this helper method
+        """
+        group = {}
+        if isinstance(key, str):
+            group['$keyf'] = Code(key)
+        elif key is not None:
+            group = {'key': helpers._fields_list_to_dict(key, 'key')}
+        group['ns'] = self.name
+        group['$reduce'] = Code(reduce)
+        group['cond'] = condition
+        group['initial'] = initial
+        if finalize is not None:
+            group['finalize'] = Code(finalize)
+
+        cmd = SON([('group', group)])
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+
+        return await connection.command(
+            self.database.name, cmd, self.read_preference, self.codec_options
+        )
+
     async def insert_one(self, document: MutableMapping, bypass_document_validation: bool=False,
                          check_keys: bool=True) -> InsertOneResult:
         if '_id' not in document:
@@ -246,7 +372,7 @@ class Collection:
                 self.database.name, command, ReadPreference.PRIMARY, self.codec_options
             )
 
-            _check_write_command_response([(0, result)])
+            helpers._check_write_command_response([(0, result)])
         else:
             _, msg, _ = message.insert(
                 str(self), [document], check_keys,
@@ -299,19 +425,19 @@ class Collection:
 
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
 
-    async def list_indexes(self):
+    async def list_indexes(self) -> CommandCursor:
         """Get a cursor over the index documents for this collection.
 
-          >>> for index in db.test.list_indexes():
-          ...     print(index)
+          >>> async with await db.test.list_indexes() as cursor:
+          ...     async for index in cursor:
+          ...         print(index)
           ...
           SON([(u'v', 1), (u'key', SON([(u'_id', 1)])),
                (u'name', u'_id_'), (u'ns', u'test.test')])
 
         :Returns:
-          An instance of :class:`~pymongo.command_cursor.CommandCursor`.
+          An instance of :class:`~aiomongo.command_cursor.CommandCursor`.
 
-        .. versionadded:: 3.0
         """
         codec_options = CodecOptions(SON)
         coll = self.with_options(codec_options)
@@ -325,6 +451,33 @@ class Collection:
         ))['cursor']
 
         return CommandCursor(connection, coll, cursor)
+
+    async def index_information(self) -> dict:
+        """Get information on this collection's indexes.
+
+        Returns a dictionary where the keys are index names (as
+        returned by create_index()) and the values are dictionaries
+        containing information about each index. The dictionary is
+        guaranteed to contain at least a single key, ``"key"`` which
+        is a list of (key, direction) pairs specifying the index (as
+        passed to create_index()). It will also contain any other
+        metadata about the indexes, except for the ``"ns"`` and
+        ``"name"`` keys, which are cleaned. Example output might look
+        like this:
+
+        >>> await db.test.ensure_index("x", unique=True)
+        u'x_1'
+        >>> await db.test.index_information()
+        {u'_id_': {u'key': [(u'_id', 1)]},
+         u'x_1': {u'unique': True, u'key': [(u'x', 1)]}}
+        """
+        info = {}
+        async with (await self.list_indexes()) as cursor:
+            async for index in cursor:
+                index['key'] = index['key'].items()
+                index = dict(index)
+                info[index.pop('name')] = index
+        return info
 
     def with_options(
             self, codec_options=None, read_preference=None,

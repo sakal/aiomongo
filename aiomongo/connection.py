@@ -2,10 +2,13 @@ import asyncio
 import logging
 import struct
 
-from pymongo import helpers, message
+from bson import DEFAULT_CODEC_OPTIONS
+from pymongo import common, helpers, message
+from pymongo.ismaster import IsMaster
 from pymongo.errors import ProtocolError
 from pymongo.read_concern import DEFAULT_READ_CONCERN
 from pymongo.read_preferences import ReadPreference
+from pymongo.server_type import SERVER_TYPE
 
 logger = logging.getLogger('aiomongo.connection')
 
@@ -19,16 +22,37 @@ class Connection:
         self.reader = reader
         self.writer = writer
         self.read_loop_task = None
+        self.is_mongos = False
+        self.is_writable = False
+        self.max_bson_size = common.MAX_BSON_SIZE
+        self.max_message_size = common.MAX_MESSAGE_SIZE
+        self.max_wire_version = 0
+        self.max_write_batch_size = common.MAX_WRITE_BATCH_SIZE
+        self.slave_ok = False
 
         self.__request_id = 0
         self.__request_futures = {}
 
     @classmethod
-    async def create(cls, loop, host: str, port: int=27017):
+    async def create(cls, loop, host: str, port: int=27017, read_preference=ReadPreference.PRIMARY):
         reader, writer = await asyncio.open_connection(host=host, port=port, loop=loop)
         logging.debug('Established connection to {}:{}'.format(host, port))
         conn = cls(reader, writer)
         conn.read_loop_task = asyncio.ensure_future(conn.read_loop(), loop=loop)
+
+        ismaster = IsMaster(await conn.command(
+            'admin', {'ismaster': 1}, ReadPreference.PRIMARY, DEFAULT_CODEC_OPTIONS
+        ))
+
+        conn.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
+        conn.max_wire_version = ismaster.max_wire_version
+        conn.max_bson_size = ismaster.max_bson_size
+        conn.max_message_size = ismaster.max_message_size
+        conn.max_write_batch_size = ismaster.max_write_batch_size
+        conn.is_writable = ismaster.is_writable
+
+        conn.slave_ok = not conn.is_mongos and read_preference != ReadPreference.PRIMARY
+
         return conn
 
     def gen_request_id(self) -> int:
@@ -39,8 +63,8 @@ class Connection:
 
         return self.__request_id
 
-    async def perform_operation(self, operation):
-        message = operation.get_message(False, True, True)
+    async def perform_operation(self, operation) -> bytes:
+        message = operation.get_message(self.slave_ok, self.is_mongos, True)
 
         request_id, data, _ = self._split_message(message)
         response_future = asyncio.Future()
@@ -82,7 +106,8 @@ class Connection:
         else:
             flags = 0
 
-        spec = message._maybe_add_read_preference(spec, read_preference)
+        if self.is_mongos:
+            spec = message._maybe_add_read_preference(spec, read_preference)
         if read_concern.level:
             spec['readConcern'] = read_concern.document
 

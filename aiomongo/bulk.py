@@ -8,8 +8,7 @@ from io import BytesIO
 from pymongo.bulk import _COMMANDS, _Run, _merge_command
 from pymongo.common import (validate_is_document_type,
                             validate_ok_for_replace,
-                            validate_ok_for_update, MAX_BSON_SIZE,
-                            MAX_WRITE_BATCH_SIZE)
+                            validate_ok_for_update)
 from pymongo.errors import BulkWriteError, InvalidOperation
 from pymongo.message import (_COMMAND_OVERHEAD, _INSERT, _UPDATE, _DELETE, _BSONOBJ,
                              _ZERO_8, _ZERO_16, _ZERO_32, _ZERO_64, _SKIPLIM,
@@ -159,7 +158,7 @@ class Bulk:
 
         # Max BSON object size + 16k - 2 bytes for ending NUL bytes.
         # Server guarantees there is enough room: SERVER-10643.
-        max_cmd_size = MAX_BSON_SIZE + _COMMAND_OVERHEAD
+        max_cmd_size = connection.max_bson_size + _COMMAND_OVERHEAD
 
         ordered = command.get('ordered', True)
 
@@ -211,12 +210,12 @@ class Bulk:
 
             # Send a batch?
             enough_data = (buf.tell() + len(key) + len(value) + 2) >= max_cmd_size
-            enough_documents = (idx >= MAX_WRITE_BATCH_SIZE)
+            enough_documents = (idx >= connection.max_write_batch_size)
             if enough_data or enough_documents:
                 if not idx:
                     write_op = 'insert' if operation == _INSERT else None
                     _raise_document_too_large(
-                        write_op, len(value), MAX_BSON_SIZE)
+                        write_op, len(value), connection.max_bson_size)
                 result = await self._send_message(connection, buf, command_start, list_start)
                 results.append((idx_offset, result))
                 if ordered and 'writeErrors' in result:
