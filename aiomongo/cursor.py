@@ -1,4 +1,5 @@
 from collections import deque
+from typing import Optional, Union, List
 
 from bson.codec_options import DEFAULT_CODEC_OPTIONS
 from bson.son import SON
@@ -8,16 +9,18 @@ from pymongo.cursor import _QUERY_OPTIONS
 from pymongo.message import _GetMore, _Query
 from pymongo.read_preferences import ReadPreference
 
+import aiomongo
+
 
 class Cursor:
-
-    def __init__(self, connection, collection, filter, projection, skip, limit, sort, modifiers,
-                 batch_size=0):
+    def __init__(self, connection: 'aiomongo.Connection', collection: 'aiomongo.Collection',
+                 filter: dict, projection: Optional[Union[dict, list]],
+                 skip: int, limit: int, sort: List[tuple], modifiers: Optional[dict],
+                 batch_size: int = 0) -> None:
 
         spec = filter
         if spec is None:
             spec = {}
-
         validate_is_mapping('filter', spec)
         if not isinstance(skip, int):
             raise TypeError('skip must be an instance of int')
@@ -68,10 +71,10 @@ class Cursor:
         if self.__read_preference != ReadPreference.PRIMARY:
             self.__query_flags |= _QUERY_OPTIONS['slave_okay']
 
-    def __aiter__(self):
+    def __aiter__(self) -> 'Cursor':
         return self
 
-    def __query_spec(self):
+    def __query_spec(self) -> SON:
         """Get the spec to use for a query.
         """
         operators = self.__modifiers
@@ -203,10 +206,10 @@ class Cursor:
 
         return len(self.__data)
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> 'Cursor':
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc) -> None:
         await self.close()
 
     async def close(self) -> None:
@@ -219,5 +222,3 @@ class Cursor:
                     self.__collection.database.name, spec, self.__read_preference,
                     self.__codec_options
                 )
-
-

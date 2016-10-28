@@ -1,5 +1,5 @@
 import struct
-from typing import Iterable
+from typing import Iterable, Iterator, List, Tuple
 
 from bson import BSON, ObjectId
 from bson.codec_options import CodecOptions
@@ -16,9 +16,12 @@ from pymongo.message import (_COMMAND_OVERHEAD, _INSERT, _UPDATE, _DELETE, _BSON
 from pymongo.write_concern import WriteConcern
 
 
+import aiomongo
+
+
 class Bulk:
 
-    def __init__(self, collection, ordered: bool, bypass_document_validation: bool):
+    def __init__(self, collection: 'aiomongo.Collection', ordered: bool, bypass_document_validation: bool):
         self.collection = collection
         self.ordered = ordered
         self.ops = []
@@ -27,16 +30,16 @@ class Bulk:
         self.executed = False
         self.bypass_doc_val = bypass_document_validation
 
-    def add_insert(self, document):
+    def add_insert(self, document: dict) -> None:
         """Add an insert document to the list of ops.
         """
-        validate_is_document_type("document", document)
+        validate_is_document_type('document', document)
         # Generate ObjectId client side.
         if '_id' not in document:
             document['_id'] = ObjectId()
         self.ops.append((_INSERT, document))
 
-    def add_update(self, selector, update, multi=False, upsert=False):
+    def add_update(self, selector: dict, update: dict, multi: bool = False, upsert: bool = False) -> None:
         """Create an update document and add it to the list of ops.
         """
         validate_ok_for_update(update)
@@ -44,7 +47,7 @@ class Bulk:
                    ('multi', multi), ('upsert', upsert)])
         self.ops.append((_UPDATE, cmd))
 
-    def add_replace(self, selector, replacement, upsert=False):
+    def add_replace(self, selector: dict, replacement: dict, upsert: bool=False) -> None:
         """Create a replace document and add it to the list of ops.
         """
         validate_ok_for_replace(replacement)
@@ -52,13 +55,13 @@ class Bulk:
                    ('multi', False), ('upsert', upsert)])
         self.ops.append((_UPDATE, cmd))
 
-    def add_delete(self, selector, limit):
+    def add_delete(self, selector: dict, limit: int) -> None:
         """Create a delete document and add it to the list of ops.
         """
         cmd = SON([('q', selector), ('limit', limit)])
         self.ops.append((_DELETE, cmd))
 
-    def gen_ordered(self):
+    def gen_ordered(self) -> Iterator[_Run]:
         """Generate batches of operations, batched by type of
         operation, in the order **provided**.
         """
@@ -72,7 +75,7 @@ class Bulk:
             run.add(idx, operation)
         yield run
 
-    def gen_unordered(self):
+    def gen_unordered(self) -> Iterator[_Run]:
         """Generate batches of operations, batched by type of
         operation, in arbitrary order.
         """
@@ -84,7 +87,8 @@ class Bulk:
             if run.ops:
                 yield run
 
-    async def execute_command(self, connection, generator, write_concern):
+    async def execute_command(self, connection: 'aiomongo.Connection', generator: Iterable[_Run],
+                              write_concern: WriteConcern) -> dict:
         """Execute using write commands.
         """
         # nModified is only reported for write commands, not legacy ops.
@@ -104,7 +108,7 @@ class Bulk:
                        ('ordered', self.ordered)])
             if write_concern.document:
                 cmd['writeConcern'] = write_concern.document
-            if self.bypass_doc_val:
+            if self.bypass_doc_val and connection.max_wire_version >= 4:
                 cmd['bypassDocumentValidation'] = True
 
             results = await self._do_batched_write_command(
@@ -124,10 +128,10 @@ class Bulk:
             raise BulkWriteError(full_result)
         return full_result
 
-    async def execute_no_results(self, connection, generator):
-        pass
+    async def execute_no_results(self, connection: 'aiomongo.Connection', generator: Iterable[_Run]) -> dict:
+        raise NotImplemented('Should be implemented in future versions of aiomongo.')
 
-    async def execute(self, write_concern):
+    async def execute(self, write_concern: dict) -> dict:
         """Execute operations.
         """
         if not self.ops:
@@ -154,7 +158,7 @@ class Bulk:
 
     async def _do_batched_write_command(self, namespace: str, operation: str, command: SON,
                                         docs: Iterable[dict], check_keys: bool, opts: CodecOptions,
-                                        connection):
+                                        connection) -> List[Tuple[int, dict]]:
 
         # Max BSON object size + 16k - 2 bytes for ending NUL bytes.
         # Server guarantees there is enough room: SERVER-10643.
@@ -242,7 +246,8 @@ class Bulk:
         return results
 
     @staticmethod
-    async def _send_message(connection, buf: BytesIO, command_start: int, list_start: int):
+    async def _send_message(connection: 'aiomongo.Connection', buf: BytesIO, command_start: int,
+                            list_start: int) -> dict:
 
         # Close list and command documents
         buf.write(_ZERO_16)

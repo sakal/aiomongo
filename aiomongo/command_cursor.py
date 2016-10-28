@@ -5,12 +5,15 @@ from pymongo import helpers
 from pymongo.errors import OperationFailure
 from pymongo.message import _GetMore
 
+import aiomongo
+
 
 class CommandCursor:
     """A cursor / iterator over command cursors.
     """
 
-    def __init__(self, connection, collection, cursor_info, retrieved=0):
+    def __init__(self, connection: 'aiomongo.Connection', collection: 'aiomongo.Collection',
+                 cursor_info: dict, retrieved: int = 0):
         """Create a new command cursor.
         """
         self.__connection = connection
@@ -26,7 +29,7 @@ class CommandCursor:
         else:
             self.__ns = str(collection)
 
-    async def close(self):
+    async def close(self) -> None:
         """Explicitly close / kill this cursor. Required for PyPy, Jython and
         other Python implementations that don't use reference counting
         garbage collection.
@@ -41,7 +44,7 @@ class CommandCursor:
                     self.__collection.codec_options
                 )
 
-    def batch_size(self, batch_size):
+    def batch_size(self, batch_size: int) -> 'CommandCursor':
         """Limits the number of documents returned in one batch. Each batch
         requires a round trip to the server. It can be adjusted to optimize
         performance and limit data transfer.
@@ -65,7 +68,7 @@ class CommandCursor:
         self.__batch_size = batch_size == 1 and 2 or batch_size
         return self
 
-    async def _refresh(self):
+    async def _refresh(self) -> None:
         """Refreshes the cursor with more data from the server.
 
         Returns the length of self.__data after refresh. Will exit early if
@@ -114,7 +117,7 @@ class CommandCursor:
         return len(self.__data)
 
     @property
-    def alive(self):
+    def alive(self) -> bool:
         """Does this cursor have the potential to return more data?
 
         Even if :attr:`alive` is ``True``, :meth:`next` can raise
@@ -130,10 +133,10 @@ class CommandCursor:
         """
         return bool(len(self.__data) or (not self.__killed))
 
-    def __aiter__(self):
+    def __aiter__(self) -> 'CommandCursor':
         return self
 
-    async def __anext__(self):
+    async def __anext__(self) -> dict:
         if len(self.__data):
             return self.__data.popleft()
 
@@ -143,8 +146,8 @@ class CommandCursor:
 
         return self.__data.popleft()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> 'CommandCursor':
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, *exc) ->None:
         await self.close()

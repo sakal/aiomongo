@@ -5,7 +5,7 @@ import struct
 from bson import DEFAULT_CODEC_OPTIONS
 from pymongo import common, helpers, message
 from pymongo.ismaster import IsMaster
-from pymongo.errors import ProtocolError
+from pymongo.errors import ConfigurationError, ProtocolError
 from pymongo.read_concern import DEFAULT_READ_CONCERN
 from pymongo.read_preferences import ReadPreference
 from pymongo.server_type import SERVER_TYPE
@@ -46,9 +46,12 @@ class Connection:
 
         conn.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
         conn.max_wire_version = ismaster.max_wire_version
-        conn.max_bson_size = ismaster.max_bson_size
-        conn.max_message_size = ismaster.max_message_size
-        conn.max_write_batch_size = ismaster.max_write_batch_size
+        if ismaster.max_bson_size:
+            conn.max_bson_size = ismaster.max_bson_size
+        if ismaster.max_message_size:
+            conn.max_message_size = ismaster.max_message_size
+        if ismaster.max_write_batch_size:
+            conn.max_write_batch_size = ismaster.max_write_batch_size
         conn.is_writable = ismaster.is_writable
 
         conn.slave_ok = not conn.is_mongos and read_preference != ReadPreference.PRIMARY
@@ -74,7 +77,7 @@ class Connection:
 
         return await response_future
 
-    async def write_command(self, request_id: int, message: bytes):
+    async def write_command(self, request_id: int, message: bytes) -> dict:
         response_future = asyncio.Future()
         self.__request_futures[request_id] = response_future
 
@@ -97,6 +100,13 @@ class Connection:
     async def command(self, dbname, spec, read_preference, codec_options, check=True,
                       allowable_errors=None, check_keys=False, max_bson_size=None,
                       read_concern=DEFAULT_READ_CONCERN):
+
+        if self.max_wire_version < 4 and not read_concern.ok_for_legacy:
+            raise ConfigurationError(
+                'Read concern of level {} is not valid with max wire version of {}'.format(
+                    read_concern.level, self.max_wire_version
+                )
+            )
 
         name = next(iter(spec))
         ns = dbname + '.$cmd'
@@ -176,7 +186,8 @@ class Connection:
         message_data = await self.reader.readexactly(length - 16)
 
         ft = self.__request_futures.pop(response_id)
-        ft.set_result(message_data)
+        if not ft.cancelled():
+            ft.set_result(message_data)
 
     def close(self):
         if self.read_loop_task is not None:

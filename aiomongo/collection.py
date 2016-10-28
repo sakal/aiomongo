@@ -1,24 +1,29 @@
 import collections
-from typing import Iterable, Optional, Union, List, Tuple, MutableMapping
+from typing import Iterable, Optional, Union, List, Tuple, MutableMapping, Dict
 
 from bson import ObjectId
 from bson.code import Code
 from bson.son import SON
 from bson.codec_options import CodecOptions
 from pymongo import common, helpers, message
-from pymongo.errors import ConfigurationError
-from pymongo.read_preferences import ReadPreference
+from pymongo.collection import ReturnDocument, _NO_OBJ_ERROR
+from pymongo.errors import ConfigurationError, InvalidName
+from pymongo.read_concern import ReadConcern
+from pymongo.read_preferences import ReadPreference, _ALL_READ_PREFERENCES
 from pymongo.results import InsertManyResult, InsertOneResult
+from pymongo.write_concern import WriteConcern
 
+import aiomongo
 from .bulk import Bulk
 from .command_cursor import CommandCursor
 from .cursor import Cursor
 
 
 class Collection:
-
-    def __init__(self, database, name, read_preference=None, read_concern=None, codec_options=None,
-                 write_concern=None):
+    def __init__(self, database: 'aiomongo.Database', name: str,
+                 read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
+                 read_concern: Optional[ReadConcern] = None,
+                 codec_options: Optional[CodecOptions] = None, write_concern: Optional[WriteConcern] = None):
         self.database = database
         self.read_preference = read_preference or database.read_preference
         self.read_concern = read_concern or database.read_concern
@@ -30,27 +35,13 @@ class Collection:
             unicode_decode_error_handler='replace',
             document_class=dict)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '{}.{}'.format(self.database.name, self.name)
 
     def __repr__(self) -> str:
         return 'Collection({}, {})'.format(self.database.name, self.name)
 
-    async def __create(self, options: dict):
-        """Sends a create command with the given options.
-        """
-        cmd = SON([('create', self.name)])
-        if options:
-            if 'size' in options:
-                options['size'] = float(options['size'])
-            cmd.update(options)
-
-        connection = self.database.client.get_connection()
-        await connection.command(
-            self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options
-        )
-
-    async def aggregate(self, pipeline: list, **kwargs) -> CommandCursor:
+    async def aggregate(self, pipeline: List[dict], **kwargs) -> CommandCursor:
         """Perform an aggregation using the aggregation framework on this
         collection.
 
@@ -128,8 +119,8 @@ class Collection:
 
         return CommandCursor(connection, self, cursor).batch_size(batch_size or 0)
 
-    async def count(self, filter: Optional[dict]=None, hint: Optional[Union[str, List[Tuple]]]=None,
-                    limit: Optional[int]=None, skip: Optional[int]=None, max_time_ms: Optional[int]=None) -> int:
+    async def count(self, filter: Optional[dict] = None, hint: Optional[Union[str, List[Tuple]]] = None,
+                    limit: Optional[int] = None, skip: Optional[int] = None, max_time_ms: Optional[int] = None) -> int:
         cmd = SON([('count', self.name)])
         if filter is not None:
             cmd['query'] = filter
@@ -239,6 +230,45 @@ class Collection:
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
         return name
 
+    async def distinct(self, key: str, filter: Optional[dict] = None, **kwargs) -> dict:
+        """Get a list of distinct values for `key` among all documents
+        in this collection.
+
+        Raises :class:`TypeError` if `key` is not an instance of :class:`str`
+
+        All optional distinct parameters should be passed as keyword arguments
+        to this method. Valid options include:
+
+          - `maxTimeMS` (int): The maximum amount of time to allow the count
+            command to run, in milliseconds.
+
+        The :meth:`distinct` method obeys the :attr:`read_preference` of
+        this :class:`Collection`.
+
+        :Parameters:
+          - `key`: name of the field for which we want to get the distinct
+            values
+          - `filter` (optional): A query document that specifies the documents
+            from which to retrieve the distinct values.
+          - `**kwargs` (optional): See list of options above.
+        """
+        if not isinstance(key, str):
+            raise TypeError('key must be an instance of str')
+        cmd = SON([('distinct', self.name),
+                   ('key', key)])
+        if filter is not None:
+            if 'query' in kwargs:
+                raise ConfigurationError('cannott pass both filter and query')
+            kwargs['query'] = filter
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+
+        return (await connection.command(
+            self.database.name, cmd, self.read_preference, self.codec_options,
+            read_concern=self.read_concern
+        ))['values']
+
     async def drop_index(self, index_or_name):
         """Drops the specified index on this collection.
 
@@ -282,14 +312,15 @@ class Collection:
         await self.drop_index('*')
 
     async def find(self, filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
-                   skip: int = 0, limit: int = 0, sort: Optional[List[Tuple]]=None, modifiers: Optional[dict]=None,
-                   batch_size: int=100) -> Cursor:
+                   skip: int = 0, limit: int = 0, sort: Optional[List[Tuple]] = None, modifiers: Optional[dict] = None,
+                   batch_size: int = 100) -> Cursor:
         connection = self.database.client.get_connection()
 
         return Cursor(connection, self, filter, projection, skip, limit, sort, modifiers, batch_size)
 
     async def find_one(self, filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
-                       skip: int = 0, sort: Optional[List[Tuple]]=None, modifiers: Optional[dict]=None) -> Optional[dict]:
+                       skip: int = 0, sort: Optional[List[Tuple]] = None, modifiers: Optional[dict] = None) -> Optional[
+        dict]:
         if isinstance(filter, ObjectId):
             filter = {'_id': filter}
 
@@ -303,7 +334,7 @@ class Collection:
         return result
 
     async def group(self, key: Optional[Union[List[str], str, Code]], condition: dict, initial: int, reduce: str,
-                    finalize: Optional[str]=None, **kwargs):
+                    finalize: Optional[str] = None, **kwargs):
         """Perform a query similar to an SQL *group by* operation.
 
         Returns an array of grouped items.
@@ -350,8 +381,8 @@ class Collection:
             self.database.name, cmd, self.read_preference, self.codec_options
         )
 
-    async def insert_one(self, document: MutableMapping, bypass_document_validation: bool=False,
-                         check_keys: bool=True) -> InsertOneResult:
+    async def insert_one(self, document: MutableMapping, bypass_document_validation: bool = False,
+                         check_keys: bool = True) -> InsertOneResult:
         if '_id' not in document:
             document['_id'] = ObjectId()
 
@@ -365,7 +396,7 @@ class Collection:
                            ('ordered', True),
                            ('documents', [document])])
 
-            if bypass_document_validation:
+            if bypass_document_validation and connection.max_wire_version >= 4:
                 command['bypassDocumentValidation'] = True
 
             result = await connection.command(
@@ -382,11 +413,11 @@ class Collection:
 
         return InsertOneResult(document['_id'], acknowledged)
 
-    async def insert_many(self, documents: Iterable[dict], ordered: bool=True,
-                          bypass_document_validation: bool=False) -> InsertManyResult:
+    async def insert_many(self, documents: Iterable[dict], ordered: bool = True,
+                          bypass_document_validation: bool = False) -> InsertManyResult:
 
         if not isinstance(documents, collections.Iterable) or not documents:
-            raise TypeError("documents must be a non-empty list")
+            raise TypeError('documents must be a non-empty list')
 
         blk = Bulk(self, ordered, bypass_document_validation)
         inserted_ids = []
@@ -412,7 +443,7 @@ class Collection:
 
         return InsertManyResult(inserted_ids, self.write_concern.acknowledged)
 
-    async def reindex(self):
+    async def reindex(self) -> None:
         """Rebuilds all indexes on this collection.
 
         .. warning:: reindex blocks all other operations (indexes
@@ -424,6 +455,116 @@ class Collection:
         connection = self.database.client.get_connection()
 
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
+
+    async def map_reduce(self, map: Code, reduce: Code, out: str,
+                         full_response: bool = False, **kwargs) -> Union[dict, 'Collection']:
+        """Perform a map/reduce operation on this collection.
+
+        If `full_response` is ``False`` (default) returns a
+        :class:`~pymongo.collection.Collection` instance containing
+        the results of the operation. Otherwise, returns the full
+        response from the server to the `map reduce command`_.
+
+        :Parameters:
+          - `map`: map function (as a JavaScript string)
+          - `reduce`: reduce function (as a JavaScript string)
+          - `out`: output collection name or `out object` (dict). See
+            the `map reduce command`_ documentation for available options.
+            Note: `out` options are order sensitive. :class:`~bson.son.SON`
+            can be used to specify multiple options.
+            e.g. SON([('replace', <collection name>), ('db', <database name>)])
+          - `full_response` (optional): if ``True``, return full response to
+            this command - otherwise just return the result collection
+          - `**kwargs` (optional): additional arguments to the
+            `map reduce command`_ may be passed as keyword arguments to this
+            helper method, e.g.::
+
+            >>> await db.test.map_reduce(map, reduce, 'myresults', limit=2)
+
+        .. note:: The :meth:`map_reduce` method does **not** obey the
+           :attr:`read_preference` of this :class:`Collection`. To run
+           mapReduce on a secondary use the :meth:`inline_map_reduce` method
+           instead.
+
+        .. _map reduce command: http://docs.mongodb.org/manual/reference/command/mapReduce/
+
+        .. mongodoc:: mapreduce
+        """
+        if not isinstance(out, (str, collections.Mapping)):
+            raise TypeError('"out" must be an instance of str or a mapping')
+
+        cmd = SON([('mapreduce', self.name),
+                   ('map', map),
+                   ('reduce', reduce),
+                   ('out', out)])
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+
+        if connection.max_wire_version >= 4 and 'readConcern' not in cmd and 'inline' in cmd['out']:
+            response = await connection.command(
+                self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options,
+                read_concern=self.read_concern)
+        else:
+            response = await connection.command(
+                self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
+
+        if full_response or not response.get('result'):
+            return response
+        elif isinstance(response['result'], dict):
+            dbase = response['result']['db']
+            coll = response['result']['collection']
+            return self.database.client[dbase][coll]
+        else:
+            return self.database[response['result']]
+
+    async def inline_map_reduce(self, map: Code, reduce: Code, full_response: bool = False, **kwargs) -> dict:
+        """Perform an inline map/reduce operation on this collection.
+
+        Perform the map/reduce operation on the server in RAM. A result
+        collection is not created. The result set is returned as a list
+        of documents.
+
+        If `full_response` is ``False`` (default) returns the
+        result documents in a list. Otherwise, returns the full
+        response from the server to the `map reduce command`_.
+
+        The :meth:`inline_map_reduce` method obeys the :attr:`read_preference`
+        of this :class:`Collection`.
+
+        :Parameters:
+          - `map`: map function (as a JavaScript string)
+          - `reduce`: reduce function (as a JavaScript string)
+          - `full_response` (optional): if ``True``, return full response to
+            this command - otherwise just return the result collection
+          - `**kwargs` (optional): additional arguments to the
+            `map reduce command`_ may be passed as keyword arguments to this
+            helper method, e.g.::
+
+            >>> await db.test.inline_map_reduce(map, reduce, limit=2)
+        """
+        cmd = SON([('mapreduce', self.name),
+                   ('map', map),
+                   ('reduce', reduce),
+                   ('out', {'inline': 1})])
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+
+        if connection.max_wire_version >= 4 and 'readConcern' not in cmd:
+            res = await connection.command(
+                self.database.name, cmd, self.read_preference, self.codec_options,
+                read_concern=self.read_concern
+            )
+        else:
+            res = await connection.command(
+                self.database.name, cmd, self.read_preference, self.codec_options,
+            )
+
+        if full_response:
+            return res
+        else:
+            return res.get('results')
 
     async def list_indexes(self) -> CommandCursor:
         """Get a cursor over the index documents for this collection.
@@ -452,6 +593,38 @@ class Collection:
 
         return CommandCursor(connection, coll, cursor)
 
+    async def rename(self, new_name: str, **kwargs) -> None:
+        """Rename this collection.
+
+        If operating in auth mode, client must be authorized as an
+        admin to perform this operation. Raises :class:`TypeError` if
+        `new_name` is not an instance of :class:`basestring`
+        (:class:`str` in python 3). Raises :class:`~pymongo.errors.InvalidName`
+        if `new_name` is not a valid collection name.
+
+        :Parameters:
+          - `new_name`: new name for this collection
+          - `**kwargs` (optional): additional arguments to the rename command
+            may be passed as keyword arguments to this helper method
+            (i.e. ``dropTarget=True``)
+        """
+        if not isinstance(new_name, str):
+            raise TypeError('new_name must be an instance of str')
+
+        if not new_name or '..' in new_name:
+            raise InvalidName('collection names cannot be empty')
+        if new_name[0] == '.' or new_name[-1] == '.':
+            raise InvalidName('collection names must not start or end with \'.\'')
+        if '$' in new_name and not new_name.startswith('oplog.$main'):
+            raise InvalidName('collection names must not contain \'$\'')
+
+        new_name = '{}.{}'.format(self.database.name, new_name)
+        cmd = SON([('renameCollection', str(self)), ('to', new_name)])
+        cmd.update(kwargs)
+
+        connection = self.database.client.get_connection()
+        await connection.command('admin', cmd, ReadPreference.PRIMARY, self.codec_options)
+
     async def index_information(self) -> dict:
         """Get information on this collection's indexes.
 
@@ -479,9 +652,10 @@ class Collection:
                 info[index.pop('name')] = index
         return info
 
-    def with_options(
-            self, codec_options=None, read_preference=None,
-            write_concern=None, read_concern=None):
+    def with_options(self, codec_options: Optional[CodecOptions] = None,
+                     read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
+                     write_concern: Optional[WriteConcern] = None,
+                     read_concern: Optional[ReadConcern] = None) -> 'Collection':
         """Get a clone of this collection changing the specified settings.
 
           >>> coll1.read_preference
@@ -517,3 +691,267 @@ class Collection:
                           read_concern or self.read_concern,
                           codec_options or self.codec_options,
                           write_concern or self.write_concern)
+
+    async def __find_and_modify(self, filter: dict, projection: Optional[Union[list, dict]],
+                                sort: Optional[List[tuple]], upsert: Optional[bool] = None,
+                                return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+        """Internal findAndModify helper."""
+        common.validate_is_mapping('filter', filter)
+        if not isinstance(return_document, bool):
+            raise ValueError('return_document must be ReturnDocument.BEFORE or ReturnDocument.AFTER')
+        cmd = SON([('findAndModify', self.name),
+                   ('query', filter),
+                   ('new', return_document)])
+        cmd.update(kwargs)
+        if projection is not None:
+            cmd['fields'] = helpers._fields_list_to_dict(projection, 'projection')
+        if sort is not None:
+            cmd['sort'] = helpers._index_document(sort)
+        if upsert is not None:
+            common.validate_boolean('upsert', upsert)
+            cmd['upsert'] = upsert
+
+        connection = self.database.client.get_connection()
+        if connection.max_wire_version >= 4 and 'writeConcern' not in cmd:
+            wc_doc = self.write_concern.document
+            if wc_doc:
+                cmd['writeConcern'] = wc_doc
+
+        out = await connection.command(
+            self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options,
+            allowable_errors=[_NO_OBJ_ERROR]
+        )
+        helpers._check_write_command_response([(0, out)])
+        return out.get('value')
+
+    async def find_one_and_delete(self, filter: dict, projection: Optional[Union[list, dict]] = None,
+                                  sort: Optional[List[tuple]] = None, **kwargs) -> dict:
+        """Finds a single document and deletes it, returning the document.
+
+          >>> await db.test.count({'x': 1})
+          2
+          >>> await db.test.find_one_and_delete({'x': 1})
+          {u'x': 1, u'_id': ObjectId('54f4e12bfba5220aa4d6dee8')}
+          >>> await db.test.count({'x': 1})
+          1
+
+        If multiple documents match *filter*, a *sort* can be applied.
+
+          >>> async for doc in db.test.find({'x': 1}):
+          ...     print(doc)
+          ...
+          {u'x': 1, u'_id': 0}
+          {u'x': 1, u'_id': 1}
+          {u'x': 1, u'_id': 2}
+          >>> await db.test.find_one_and_delete(
+          ...     {'x': 1}, sort=[('_id', pymongo.DESCENDING)])
+          {u'x': 1, u'_id': 2}
+
+        The *projection* option can be used to limit the fields returned.
+
+          >>> await db.test.find_one_and_delete({'x': 1}, projection={'_id': False})
+          {u'x': 1}
+
+        :Parameters:
+          - `filter`: A query that matches the document to delete.
+          - `projection` (optional): a list of field names that should be
+            returned in the result document or a mapping specifying the fields
+            to include or exclude. If `projection` is a list "_id" will
+            always be returned. Use a mapping to exclude fields from
+            the result (e.g. projection={'_id': False}).
+          - `sort` (optional): a list of (key, direction) pairs
+            specifying the sort order for the query. If multiple documents
+            match the query, they are sorted and the first is deleted.
+          - `**kwargs` (optional): additional command arguments can be passed
+            as keyword arguments (for example maxTimeMS can be used with
+            recent server versions).
+
+        .. versionchanged:: 3.2
+           Respects write concern.
+
+        .. warning:: Starting in PyMongo 3.2, this command uses the
+           :class:`~pymongo.write_concern.WriteConcern` of this
+           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           3.2. Note that using an elevated write concern with this command may
+           be slower compared to using the default write concern.
+
+        """
+        kwargs['remove'] = True
+        return await self.__find_and_modify(filter, projection, sort, **kwargs)
+
+    async def find_one_and_replace(self, filter: dict, replacement: dict,
+                                   projection: Optional[Union[list, dict]] = None,
+                                   sort: Optional[List[tuple]] = None, upsert: bool = False,
+                                   return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+        """Finds a single document and replaces it, returning either the
+        original or the replaced document.
+
+        The :meth:`find_one_and_replace` method differs from
+        :meth:`find_one_and_update` by replacing the document matched by
+        *filter*, rather than modifying the existing document.
+
+          >>> async for doc in db.test.find({}):
+          ...     print(doc)
+          ...
+          {u'x': 1, u'_id': 0}
+          {u'x': 1, u'_id': 1}
+          {u'x': 1, u'_id': 2}
+          >>> await db.test.find_one_and_replace({'x': 1}, {'y': 1})
+          {u'x': 1, u'_id': 0}
+          >>> async for doc in db.test.find({}):
+          ...     print(doc)
+          ...
+          {u'y': 1, u'_id': 0}
+          {u'x': 1, u'_id': 1}
+          {u'x': 1, u'_id': 2}
+
+        :Parameters:
+          - `filter`: A query that matches the document to replace.
+          - `replacement`: The replacement document.
+          - `projection` (optional): A list of field names that should be
+            returned in the result document or a mapping specifying the fields
+            to include or exclude. If `projection` is a list "_id" will
+            always be returned. Use a mapping to exclude fields from
+            the result (e.g. projection={'_id': False}).
+          - `sort` (optional): a list of (key, direction) pairs
+            specifying the sort order for the query. If multiple documents
+            match the query, they are sorted and the first is replaced.
+          - `upsert` (optional): When ``True``, inserts a new document if no
+            document matches the query. Defaults to ``False``.
+          - `return_document`: If
+            :attr:`ReturnDocument.BEFORE` (the default),
+            returns the original document before it was replaced, or ``None``
+            if no document matches. If
+            :attr:`ReturnDocument.AFTER`, returns the replaced
+            or inserted document.
+          - `**kwargs` (optional): additional command arguments can be passed
+            as keyword arguments (for example maxTimeMS can be used with
+            recent server versions).
+
+        .. versionchanged:: 3.2
+           Respects write concern.
+
+        .. warning:: Starting in PyMongo 3.2, this command uses the
+           :class:`~pymongo.write_concern.WriteConcern` of this
+           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           3.2. Note that using an elevated write concern with this command may
+           be slower compared to using the default write concern.
+
+        """
+        common.validate_ok_for_replace(replacement)
+        kwargs['update'] = replacement
+        return await self.__find_and_modify(filter, projection,
+                                            sort, upsert, return_document, **kwargs)
+
+    async def find_one_and_update(self, filter: dict, update: dict,
+                                  projection: Optional[Union[list, dict]] = None,
+                                  sort: Optional[List[tuple]] = None, upsert: bool = False,
+                                  return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+        """Finds a single document and updates it, returning either the
+        original or the updated document.
+
+          >>> await db.test.find_one_and_update(
+          ...    {'_id': 665}, {'$inc': {'count': 1}, '$set': {'done': True}})
+          {u'_id': 665, u'done': False, u'count': 25}}
+
+        By default :meth:`find_one_and_update` returns the original version of
+        the document before the update was applied. To return the updated
+        version of the document instead, use the *return_document* option.
+
+          >>> from pymongo import ReturnDocument
+          >>> await db.example.find_one_and_update(
+          ...     {'_id': 'userid'},
+          ...     {'$inc': {'seq': 1}},
+          ...     return_document=ReturnDocument.AFTER)
+          {u'_id': u'userid', u'seq': 1}
+
+        You can limit the fields returned with the *projection* option.
+
+          >>> await db.example.find_one_and_update(
+          ...     {'_id': 'userid'},
+          ...     {'$inc': {'seq': 1}},
+          ...     projection={'seq': True, '_id': False},
+          ...     return_document=ReturnDocument.AFTER)
+          {u'seq': 2}
+
+        The *upsert* option can be used to create the document if it doesn't
+        already exist.
+
+          >>> await db.example.delete_many({}).deleted_count
+          1
+          >>> await db.example.find_one_and_update(
+          ...     {'_id': 'userid'},
+          ...     {'$inc': {'seq': 1}},
+          ...     projection={'seq': True, '_id': False},
+          ...     upsert=True,
+          ...     return_document=ReturnDocument.AFTER)
+          {u'seq': 1}
+
+        If multiple documents match *filter*, a *sort* can be applied.
+
+          >>> async for doc in db.test.find({'done': True}):
+          ...     print(doc)
+          ...
+          {u'_id': 665, u'done': True, u'result': {u'count': 26}}
+          {u'_id': 701, u'done': True, u'result': {u'count': 17}}
+          >>> await db.test.find_one_and_update(
+          ...     {'done': True},
+          ...     {'$set': {'final': True}},
+          ...     sort=[('_id', pymongo.DESCENDING)])
+          {u'_id': 701, u'done': True, u'result': {u'count': 17}}
+
+        :Parameters:
+          - `filter`: A query that matches the document to update.
+          - `update`: The update operations to apply.
+          - `projection` (optional): A list of field names that should be
+            returned in the result document or a mapping specifying the fields
+            to include or exclude. If `projection` is a list "_id" will
+            always be returned. Use a dict to exclude fields from
+            the result (e.g. projection={'_id': False}).
+          - `sort` (optional): a list of (key, direction) pairs
+            specifying the sort order for the query. If multiple documents
+            match the query, they are sorted and the first is updated.
+          - `upsert` (optional): When ``True``, inserts a new document if no
+            document matches the query. Defaults to ``False``.
+          - `return_document`: If
+            :attr:`ReturnDocument.BEFORE` (the default),
+            returns the original document before it was updated, or ``None``
+            if no document matches. If
+            :attr:`ReturnDocument.AFTER`, returns the updated
+            or inserted document.
+          - `**kwargs` (optional): additional command arguments can be passed
+            as keyword arguments (for example maxTimeMS can be used with
+            recent server versions).
+
+        .. versionchanged:: 3.2
+           Respects write concern.
+
+        .. warning:: Starting in PyMongo 3.2, this command uses the
+           :class:`~pymongo.write_concern.WriteConcern` of this
+           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           3.2. Note that using an elevated write concern with this command may
+           be slower compared to using the default write concern.
+
+        """
+        common.validate_ok_for_update(update)
+        kwargs['update'] = update
+        return await self.__find_and_modify(filter, projection,
+                                            sort, upsert, return_document, **kwargs)
+
+    def __iter__(self) -> 'Collection':
+        return self
+
+    def __next__(self):
+        raise TypeError('"Collection" object is not iterable')
+
+    def __call__(self, *args, **kwargs):
+        """This is only here so that some API misusages are easier to debug.
+        """
+        if '.' not in self.name:
+            raise TypeError('"Collection" object is not callable. If you '
+                            'meant to call the "{}" method on a "Database" '
+                            'object it is failing because no such method '
+                            "exists.".format(self.name))
+        raise TypeError('"Collection" object is not callable. If you meant to '
+                        'call the "{}" method on a "Collection" object it is '
+                        'failing because no such method exists.'.format(self.name.split(".")[-1]))
