@@ -204,6 +204,51 @@ class Database:
 
         await self.command('drop', value=name, allowable_errors=['ns not found'])
 
+    def get_collection(self, name: str, codec_options: Optional[CodecOptions] = None,
+                       read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
+                       write_concern: Optional[WriteConcern] = None,
+                       read_concern: Optional[ReadConcern] = None):
+        """Get a :class:`~pymongo.collection.Collection` with the given name
+        and options.
+
+        Useful for creating a :class:`~pymongo.collection.Collection` with
+        different codec options, read preference, and/or write concern from
+        this :class:`Database`.
+
+          >>> db.read_preference
+          Primary()
+          >>> coll1 = db.test
+          >>> coll1.read_preference
+          Primary()
+          >>> from pymongo import ReadPreference
+          >>> coll2 = db.get_collection(
+          ...     'test', read_preference=ReadPreference.SECONDARY)
+          >>> coll2.read_preference
+          Secondary(tag_sets=None)
+
+        :Parameters:
+          - `name`: The name of the collection - a string.
+          - `codec_options` (optional): An instance of
+            :class:`~bson.codec_options.CodecOptions`. If ``None`` (the
+            default) the :attr:`codec_options` of this :class:`Database` is
+            used.
+          - `read_preference` (optional): The read preference to use. If
+            ``None`` (the default) the :attr:`read_preference` of this
+            :class:`Database` is used. See :mod:`~pymongo.read_preferences`
+            for options.
+          - `write_concern` (optional): An instance of
+            :class:`~pymongo.write_concern.WriteConcern`. If ``None`` (the
+            default) the :attr:`write_concern` of this :class:`Database` is
+            used.
+          - `read_concern` (optional): An instance of
+            :class:`~pymongo.read_concern.ReadConcern`. If ``None`` (the
+            default) the :attr:`read_concern` of this :class:`Database` is
+            used.
+        """
+        return Collection(
+            self, name, read_preference, read_concern,
+            codec_options, write_concern)
+
     async def validate_collection(self, name_or_collection: Union[str, Collection],
                                   scandata: bool = False, full: bool = False) -> dict:
         """Validate a collection.

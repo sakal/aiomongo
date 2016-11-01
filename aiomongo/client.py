@@ -1,7 +1,13 @@
 import asyncio
+from typing import Optional, Union
 
+from bson.codec_options import CodecOptions
 from pymongo.client_options import ClientOptions
+from pymongo.errors import ConfigurationError
+from pymongo.read_concern import ReadConcern
+from pymongo.read_preferences import _ALL_READ_PREFERENCES
 from pymongo.uri_parser import parse_uri
+from pymongo.write_concern import WriteConcern
 
 from .connection import Connection
 from .database import Database
@@ -21,6 +27,7 @@ class AioMongoClient:
         )
         self.loop = loop
         self._pool = []
+        self.__default_database_name = uri_info['database']
 
     async def connect(self) -> None:
         self._pool = await asyncio.gather(
@@ -41,6 +48,67 @@ class AioMongoClient:
         self._index = (self._index + 1) % len(self._pool)
 
         return connection
+
+    def get_database(self, name: str, codec_options: Optional[CodecOptions] = None,
+                     read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
+                     write_concern: Optional[WriteConcern] = None,
+                     read_concern: Optional[ReadConcern] = None) -> Database:
+        """Get a :class:`~aiomongo.database.Database` with the given name and
+        options.
+
+        Useful for creating a :class:`~aiomongo.database.Database` with
+        different codec options, read preference, and/or write concern from
+        this :class:`MongoClient`.
+
+          >>> client.read_preference
+          Primary()
+          >>> db1 = client.test
+          >>> db1.read_preference
+          Primary()
+          >>> from pymongo import ReadPreference
+          >>> db2 = client.get_database(
+          ...     'test', read_preference=ReadPreference.SECONDARY)
+          >>> db2.read_preference
+          Secondary(tag_sets=None)
+
+        :Parameters:
+          - `name`: The name of the database - a string.
+          - `codec_options` (optional): An instance of
+            :class:`~bson.codec_options.CodecOptions`. If ``None`` (the
+            default) the :attr:`codec_options` of this :class:`MongoClient` is
+            used.
+          - `read_preference` (optional): The read preference to use. If
+            ``None`` (the default) the :attr:`read_preference` of this
+            :class:`MongoClient` is used. See :mod:`~pymongo.read_preferences`
+            for options.
+          - `write_concern` (optional): An instance of
+            :class:`~pymongo.write_concern.WriteConcern`. If ``None`` (the
+            default) the :attr:`write_concern` of this :class:`MongoClient` is
+            used.
+          - `read_concern` (optional): An instance of
+            :class:`~pymongo.read_concern.ReadConcern`. If ``None`` (the
+            default) the :attr:`read_concern` of this :class:`MongoClient` is
+            used.
+        """
+        return Database(
+            self, name, read_preference, read_concern,
+            codec_options, write_concern)
+
+    def get_default_database(self) -> Database:
+        """Get the database named in the MongoDB connection URI.
+
+        >>> uri = 'mongodb://host/my_database'
+        >>> client = AioMongoClient(uri)
+        >>> db = client.get_default_database()
+        >>> assert db.name == 'my_database'
+
+        Useful in scripts where you want to choose which database to use
+        based only on the URI in a configuration file.
+        """
+        if self.__default_database_name is None:
+            raise ConfigurationError('No default database defined')
+
+        return self[self.__default_database_name]
 
     def close(self) -> None:
         for conn in self._pool:
