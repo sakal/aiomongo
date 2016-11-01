@@ -334,7 +334,7 @@ class Database:
         coll = self['system.profile']
 
         result = []
-        async with await coll.find() as cursor:
+        async with coll.find() as cursor:
             async for item in cursor:
                 item.append(result)
 

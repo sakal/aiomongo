@@ -1,5 +1,5 @@
 import collections
-from typing import Iterable, Optional, Union, List, Tuple, MutableMapping, Dict
+from typing import Any, Iterable, Optional, Union, List, Tuple, MutableMapping
 
 from bson import ObjectId
 from bson.code import Code
@@ -311,27 +311,100 @@ class Collection:
         """
         await self.drop_index('*')
 
-    async def find(self, filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
-                   skip: int = 0, limit: int = 0, sort: Optional[List[Tuple]] = None, modifiers: Optional[dict] = None,
-                   batch_size: int = 100) -> Cursor:
-        connection = self.database.client.get_connection()
+    def find(self, filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
+             skip: int = 0, limit: int = 0, sort: Optional[List[Tuple]] = None, modifiers: Optional[dict] = None,
+             batch_size: int = 100, no_cursor_timeout: bool = False) -> Cursor:
+        """Query the database.
 
-        return Cursor(connection, self, filter, projection, skip, limit, sort, modifiers, batch_size)
+        The `filter` argument is a prototype document that all results
+        must match. For example:
 
-    async def find_one(self, filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
-                       skip: int = 0, sort: Optional[List[Tuple]] = None, modifiers: Optional[dict] = None) -> Optional[
-        dict]:
-        if isinstance(filter, ObjectId):
+        >>> db.test.find({'hello': 'world'})
+
+        only matches documents that have a key "hello" with value
+        "world".  Matches can have other keys *in addition* to
+        "hello". The `projection` argument is used to specify a subset
+        of fields that should be included in the result documents. By
+        limiting results to a certain subset of fields you can cut
+        down on network traffic and decoding time.
+
+        Raises :class:`TypeError` if any of the arguments are of
+        improper type. Returns an instance of
+        :class:`~aiomongo.cursor.Cursor` corresponding to this query.
+
+        The :meth:`find` method obeys the :attr:`read_preference` of
+        this :class:`Collection`.
+
+        :Parameters:
+          - `filter` (optional): a dict object specifying elements which
+            must be present for a document to be included in the
+            result set
+          - `projection` (optional): a list of field names that should be
+            returned in the result set or a dict specifying the fields
+            to include or exclude. If `projection` is a list '_id' will
+            always be returned. Use a dict to exclude fields from
+            the result (e.g. projection={'_id': False}).
+          - `skip` (optional): the number of documents to omit (from
+            the start of the result set) when returning the results
+          - `limit` (optional): the maximum number of results to
+            return
+          - `no_cursor_timeout` (optional): if False (the default), any
+            returned cursor is closed by the server after 10 minutes of
+            inactivity. If set to True, the returned cursor will never
+            time out on the server. Care should be taken to ensure that
+            cursors with no_cursor_timeout turned on are properly closed.
+          - `sort` (optional): a list of (key, direction) pairs
+            specifying the sort order for this query. See
+            :meth:`~aiomongo.cursor.Cursor.sort` for details.
+          - `modifiers` (optional): A dict specifying the MongoDB `query
+            modifiers`_ that should be used for this query. For example::
+
+              >>> db.test.find(modifiers={'$maxTimeMS': 500})
+
+          - `batch_size` (optional): Limits the number of documents returned in
+            a single batch.
+
+        .. _query modifiers:
+          http://docs.mongodb.org/manual/reference/operator/query-modifier/
+
+        .. mongodoc:: find
+        """
+        return Cursor(
+            self, filter, projection, skip, limit, sort, modifiers, batch_size, no_cursor_timeout
+        )
+
+    async def find_one(self, filter: Optional[Union[dict, Any]] = None, projection: Optional[Union[dict, list]] = None,
+                       skip: int = 0, sort: Optional[List[Tuple]] = None, max_time_ms: Optional[int] = None,
+                       modifiers: Optional[dict] = None) -> Optional[dict]:
+        """Get a single document from the database.
+
+        All arguments to :meth:`find` are also valid arguments for
+        :meth:`find_one`, although any `limit` argument will be
+        ignored. Returns a single document, or ``None`` if no matching
+        document is found.
+
+        The :meth:`find_one` method obeys the :attr:`read_preference` of
+        this :class:`Collection`.
+
+        :Additional to :meth:`find` parameters:
+
+          - `max_time_ms` (optional): a value for max_time_ms may be
+            specified as part of `**kwargs`, e.g.
+
+              >>> await find_one(max_time_ms=100)
+        """
+        if (filter is not None and not
+                isinstance(filter, collections.Mapping)):
             filter = {'_id': filter}
 
-        result_cursor = await self.find(
+        result_cursor = self.find(
             filter=filter, projection=projection, skip=skip, limit=1, sort=sort, modifiers=modifiers
-        )
-        result = None
-        async for item in result_cursor:
-            result = item
+        ).max_time_ms(max_time_ms)
 
-        return result
+        async for item in result_cursor:
+            return item
+
+        return None
 
     async def group(self, key: Optional[Union[List[str], str, Code]], condition: dict, initial: int, reduce: str,
                     finalize: Optional[str] = None, **kwargs):
