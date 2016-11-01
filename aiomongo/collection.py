@@ -10,7 +10,7 @@ from pymongo.collection import ReturnDocument, _NO_OBJ_ERROR
 from pymongo.errors import ConfigurationError, InvalidName
 from pymongo.read_concern import ReadConcern
 from pymongo.read_preferences import ReadPreference, _ALL_READ_PREFERENCES
-from pymongo.results import InsertManyResult, InsertOneResult
+from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
 from pymongo.write_concern import WriteConcern
 
 import aiomongo
@@ -443,6 +443,285 @@ class Collection:
 
         return InsertManyResult(inserted_ids, self.write_concern.acknowledged)
 
+    async def _update(self, connection: 'aiomongo.Connection', criteria: dict, document: dict,
+                      upsert: bool = False, check_keys: bool = True, multi: bool = False,
+                      ordered: bool = True, bypass_doc_val: bool = False) -> Optional[dict]:
+        """Internal update / replace helper."""
+        common.validate_boolean('upsert', upsert)
+
+        concern = self.write_concern.document
+
+        acknowledged = concern.get('w') != 0
+        command = SON([('update', self.name),
+                       ('ordered', ordered),
+                       ('writeConcern', concern),
+                       ('updates', [SON([('q', criteria),
+                                         ('u', document),
+                                         ('multi', multi),
+                                         ('upsert', upsert)])])])
+
+        if acknowledged:
+
+            if bypass_doc_val and connection.max_wire_version >= 4:
+                command['bypassDocumentValidation'] = True
+
+            result = await connection.command(
+                self.database.name, command, ReadPreference.PRIMARY, self.codec_options
+            )
+            helpers._check_write_command_response([(0, result)])
+
+            # Add the updatedExisting field for compatibility.
+            if result.get('n') and 'upserted' not in result:
+                result['updatedExisting'] = True
+            else:
+                result['updatedExisting'] = False
+                # MongoDB >= 2.6.0 returns the upsert _id in an array
+                # element. Break it out for backward compatibility.
+                if 'upserted' in result:
+                    result['upserted'] = result['upserted'][0]['_id']
+        else:
+            _, msg, _ = message.update(
+                str(self), upsert, multi, criteria, document, acknowledged, False,
+                check_keys, self.__write_response_codec_options
+            )
+            await connection.send_message(msg)
+            result = None
+
+        return result
+
+    async def replace_one(self, filter: dict, replacement: dict, upsert: bool = False,
+                          bypass_document_validation: bool = False) -> UpdateResult:
+        """Replace a single document matching the filter.
+
+          >>> async for doc in db.test.find({}):
+          ...     print(doc)
+          ...
+          {'x': 1, '_id': ObjectId('54f4c5befba5220aa4d6dee7')}
+          >>> result = await db.test.replace_one({'x': 1}, {'y': 1})
+          >>> result.matched_count
+          1
+          >>> result.modified_count
+          1
+          >>> async for doc in db.test.find({}):
+          ...     print(doc)
+          ...
+          {'y': 1, '_id': ObjectId('54f4c5befba5220aa4d6dee7')}
+
+        The *upsert* option can be used to insert a new document if a matching
+        document does not exist.
+
+          >>> result = await db.test.replace_one({'x': 1}, {'x': 1}, True)
+          >>> result.matched_count
+          0
+          >>> result.modified_count
+          0
+          >>> result.upserted_id
+          ObjectId('54f11e5c8891e756a6e1abd4')
+          >>> await db.test.find_one({'x': 1})
+          {'x': 1, '_id': ObjectId('54f11e5c8891e756a6e1abd4')}
+
+        :Parameters:
+          - `filter`: A query that matches the document to replace.
+          - `replacement`: The new document.
+          - `upsert` (optional): If ``True``, perform an insert if no documents
+            match the filter.
+          - `bypass_document_validation`: (optional) If ``True``, allows the
+            write to opt-out of document level validation. Default is
+            ``False``.
+
+        :Returns:
+          - An instance of :class:`~pymongo.results.UpdateResult`.
+
+        .. note:: `bypass_document_validation` requires server version
+          **>= 3.2**
+
+        .. versionchanged:: 3.2
+          Added bypass_document_validation support
+        """
+        common.validate_is_mapping('filter', filter)
+        common.validate_ok_for_replace(replacement)
+
+        connection = self.database.client.get_connection()
+
+        result = await self._update(
+            connection, filter, replacement, upsert,
+            bypass_doc_val=bypass_document_validation
+        )
+        return UpdateResult(result, self.write_concern.acknowledged)
+
+    async def update_one(self, filter: dict, update: dict, upsert: bool = False,
+                         bypass_document_validation: bool = False) -> UpdateResult:
+        """Update a single document matching the filter.
+
+          >>> async for doc in db.test.find():
+          ...     print(doc)
+          ...
+          {'x': 1, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
+          >>> result = await db.test.update_one({'x': 1}, {'$inc': {'x': 3}})
+          >>> result.matched_count
+          1
+          >>> result.modified_count
+          1
+          >>> async for doc in db.test.find():
+          ...     print(doc)
+          ...
+          {'x': 4, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
+
+        :Parameters:
+          - `filter`: A query that matches the document to update.
+          - `update`: The modifications to apply.
+          - `upsert` (optional): If ``True``, perform an insert if no documents
+            match the filter.
+          - `bypass_document_validation`: (optional) If ``True``, allows the
+            write to opt-out of document level validation. Default is
+            ``False``.
+
+        :Returns:
+          - An instance of :class:`~pymongo.results.UpdateResult`.
+
+        .. note:: `bypass_document_validation` requires server version
+          **>= 3.2**
+
+        .. versionchanged:: 3.2
+          Added bypass_document_validation support
+        """
+
+        common.validate_is_mapping('filter', filter)
+        common.validate_ok_for_update(update)
+
+        connection = self.database.client.get_connection()
+        result = await self._update(
+            connection, filter, update, upsert, check_keys=False,
+            bypass_doc_val=bypass_document_validation
+        )
+        return UpdateResult(result, self.write_concern.acknowledged)
+
+    async def update_many(self, filter: dict, update: dict, upsert: bool = False,
+                          bypass_document_validation: bool = False) -> UpdateResult:
+        """Update one or more documents that match the filter.
+
+          >>> async for doc in db.test.find():
+          ...     print(doc)
+          ...
+          {'x': 1, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
+          >>> result = await db.test.update_many({'x': 1}, {'$inc': {'x': 3}})
+          >>> result.matched_count
+          3
+          >>> result.modified_count
+          3
+          >>> async for doc in db.test.find():
+          ...     print(doc)
+          ...
+          {'x': 4, '_id': 0}
+          {'x': 4, '_id': 1}
+          {'x': 4, '_id': 2}
+
+        :Parameters:
+          - `filter`: A query that matches the documents to update.
+          - `update`: The modifications to apply.
+          - `upsert` (optional): If ``True``, perform an insert if no documents
+            match the filter.
+          - `bypass_document_validation`: (optional) If ``True``, allows the
+            write to opt-out of document level validation. Default is
+            ``False``.
+
+        :Returns:
+          - An instance of :class:`~pymongo.results.UpdateResult`.
+
+        .. note:: `bypass_document_validation` requires server version
+          **>= 3.2**
+
+        .. versionchanged:: 3.2
+          Added bypass_document_validation support
+        """
+        common.validate_is_mapping('filter', filter)
+        common.validate_ok_for_update(update)
+
+        connection = self.database.client.get_connection()
+        result = await self._update(
+            connection, filter, update, upsert,
+            check_keys=False, multi=True,
+            bypass_doc_val=bypass_document_validation
+        )
+        return UpdateResult(result, self.write_concern.acknowledged)
+
+    async def _delete(self, connection: 'aiomongo.Connection', criteria: dict, multi: bool,
+                      ordered: bool = True) -> Optional[dict]:
+        """Internal delete helper."""
+
+        common.validate_is_mapping('filter', criteria)
+        concern = self.write_concern.document
+        acknowledged = concern.get('w') != 0
+        command = SON([('delete', self.name),
+                       ('ordered', ordered),
+                       ('writeConcern', concern),
+                       ('deletes', [SON([('q', criteria),
+                                         ('limit', int(not multi))])])])
+
+        if acknowledged:
+            # Delete command
+            result = await connection.command(
+                self.database.name, command, ReadPreference.PRIMARY,
+                self.__write_response_codec_options
+            )
+            helpers._check_write_command_response([(0, result)])
+            return result
+
+        _, msg, _ = message.delete(
+            str(self), criteria, False, concern, self.__write_response_codec_options,
+            int(not multi)
+        )
+        await connection.send_message(msg)
+
+        return None
+
+    async def delete_one(self, filter: dict) -> DeleteResult:
+        """Delete a single document matching the filter.
+
+          >>> await db.test.count({'x': 1})
+          3
+          >>> result = await db.test.delete_one({'x': 1})
+          >>> result.deleted_count
+          1
+          >>> await db.test.count({'x': 1})
+          2
+
+        :Parameters:
+          - `filter`: A query that matches the document to delete.
+        :Returns:
+          - An instance of :class:`~pymongo.results.DeleteResult`.
+        """
+
+        connection = self.database.client.get_connection()
+        result = await self._delete(connection, filter, False)
+        return DeleteResult(result, self.write_concern.acknowledged)
+
+    async def delete_many(self, filter: dict) -> DeleteResult:
+        """Delete one or more documents matching the filter.
+
+          >>> await db.test.count({'x': 1})
+          3
+          >>> result = await db.test.delete_many({'x': 1})
+          >>> result.deleted_count
+          3
+          >>> await db.test.count({'x': 1})
+          0
+
+        :Parameters:
+          - `filter`: A query that matches the documents to delete.
+        :Returns:
+          - An instance of :class:`~pymongo.results.DeleteResult`.
+        """
+        connection = self.database.client.get_connection()
+        result = await self._delete(connection, filter, True)
+        return DeleteResult(result, self.write_concern.acknowledged)
+
     async def reindex(self) -> None:
         """Rebuilds all indexes on this collection.
 
@@ -573,8 +852,8 @@ class Collection:
           ...     async for index in cursor:
           ...         print(index)
           ...
-          SON([(u'v', 1), (u'key', SON([(u'_id', 1)])),
-               (u'name', u'_id_'), (u'ns', u'test.test')])
+          SON([('v', 1), ('key', SON([('_id', 1)])),
+               ('name', '_id_'), ('ns', 'test.test')])
 
         :Returns:
           An instance of :class:`~aiomongo.command_cursor.CommandCursor`.
@@ -639,10 +918,10 @@ class Collection:
         like this:
 
         >>> await db.test.ensure_index("x", unique=True)
-        u'x_1'
+        'x_1'
         >>> await db.test.index_information()
-        {u'_id_': {u'key': [(u'_id', 1)]},
-         u'x_1': {u'unique': True, u'key': [(u'x', 1)]}}
+        {'_id_': {'key': [('_id', 1)]},
+         'x_1': {'unique': True, 'key': [('x', 1)]}}
         """
         info = {}
         async with (await self.list_indexes()) as cursor:
@@ -731,7 +1010,7 @@ class Collection:
           >>> await db.test.count({'x': 1})
           2
           >>> await db.test.find_one_and_delete({'x': 1})
-          {u'x': 1, u'_id': ObjectId('54f4e12bfba5220aa4d6dee8')}
+          {'x': 1, '_id': ObjectId('54f4e12bfba5220aa4d6dee8')}
           >>> await db.test.count({'x': 1})
           1
 
@@ -740,17 +1019,17 @@ class Collection:
           >>> async for doc in db.test.find({'x': 1}):
           ...     print(doc)
           ...
-          {u'x': 1, u'_id': 0}
-          {u'x': 1, u'_id': 1}
-          {u'x': 1, u'_id': 2}
+          {'x': 1, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
           >>> await db.test.find_one_and_delete(
           ...     {'x': 1}, sort=[('_id', pymongo.DESCENDING)])
-          {u'x': 1, u'_id': 2}
+          {'x': 1, '_id': 2}
 
         The *projection* option can be used to limit the fields returned.
 
           >>> await db.test.find_one_and_delete({'x': 1}, projection={'_id': False})
-          {u'x': 1}
+          {'x': 1}
 
         :Parameters:
           - `filter`: A query that matches the document to delete.
@@ -793,17 +1072,17 @@ class Collection:
           >>> async for doc in db.test.find({}):
           ...     print(doc)
           ...
-          {u'x': 1, u'_id': 0}
-          {u'x': 1, u'_id': 1}
-          {u'x': 1, u'_id': 2}
+          {'x': 1, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
           >>> await db.test.find_one_and_replace({'x': 1}, {'y': 1})
-          {u'x': 1, u'_id': 0}
+          {'x': 1, '_id': 0}
           >>> async for doc in db.test.find({}):
           ...     print(doc)
           ...
-          {u'y': 1, u'_id': 0}
-          {u'x': 1, u'_id': 1}
-          {u'x': 1, u'_id': 2}
+          {'y': 1, '_id': 0}
+          {'x': 1, '_id': 1}
+          {'x': 1, '_id': 2}
 
         :Parameters:
           - `filter`: A query that matches the document to replace.
@@ -852,7 +1131,7 @@ class Collection:
 
           >>> await db.test.find_one_and_update(
           ...    {'_id': 665}, {'$inc': {'count': 1}, '$set': {'done': True}})
-          {u'_id': 665, u'done': False, u'count': 25}}
+          {'_id': 665, 'done': False, 'count': 25}}
 
         By default :meth:`find_one_and_update` returns the original version of
         the document before the update was applied. To return the updated
@@ -863,7 +1142,7 @@ class Collection:
           ...     {'_id': 'userid'},
           ...     {'$inc': {'seq': 1}},
           ...     return_document=ReturnDocument.AFTER)
-          {u'_id': u'userid', u'seq': 1}
+          {'_id': 'userid', 'seq': 1}
 
         You can limit the fields returned with the *projection* option.
 
@@ -872,7 +1151,7 @@ class Collection:
           ...     {'$inc': {'seq': 1}},
           ...     projection={'seq': True, '_id': False},
           ...     return_document=ReturnDocument.AFTER)
-          {u'seq': 2}
+          {'seq': 2}
 
         The *upsert* option can be used to create the document if it doesn't
         already exist.
@@ -885,20 +1164,20 @@ class Collection:
           ...     projection={'seq': True, '_id': False},
           ...     upsert=True,
           ...     return_document=ReturnDocument.AFTER)
-          {u'seq': 1}
+          {'seq': 1}
 
         If multiple documents match *filter*, a *sort* can be applied.
 
           >>> async for doc in db.test.find({'done': True}):
           ...     print(doc)
           ...
-          {u'_id': 665, u'done': True, u'result': {u'count': 26}}
-          {u'_id': 701, u'done': True, u'result': {u'count': 17}}
+          {'_id': 665, 'done': True, 'result': {'count': 26}}
+          {'_id': 701, 'done': True, 'result': {'count': 17}}
           >>> await db.test.find_one_and_update(
           ...     {'done': True},
           ...     {'$set': {'final': True}},
           ...     sort=[('_id', pymongo.DESCENDING)])
-          {u'_id': 701, u'done': True, u'result': {u'count': 17}}
+          {'_id': 701, 'done': True, 'result': {'count': 17}}
 
         :Parameters:
           - `filter`: A query that matches the document to update.
