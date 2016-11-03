@@ -55,10 +55,20 @@ class Connection:
         return conn
 
     async def connect(self) -> None:
-        self.reader, self.writer = await asyncio.open_connection(
-            host=self.host, port=self.port, loop=self.loop
-        )
-        logger.debug('Established connection to {}:{}'.format(self.host, self.port))
+        if self.host.startswith('/'):
+            self.reader, self.writer = await asyncio.open_unix_connection(
+                path=self.host, loop=self.loop
+            )
+        else:
+            self.reader, self.writer = await asyncio.open_connection(
+                host=self.host, port=self.port, loop=self.loop
+            )
+
+        if self.host.startswith('/'):
+            endpoint = self.host
+        else:
+            endpoint = '{}:{}'.format(self.host, self.port)
+        logger.debug('Established connection to {}'.format(endpoint))
         self.read_loop_task = asyncio.ensure_future(self.read_loop(), loop=self.loop)
 
         ismaster = IsMaster(await self.command(
@@ -188,7 +198,6 @@ class Connection:
 
         unpacked = helpers._unpack_response(response, codec_options=codec_options)
         response_doc = unpacked['data'][0]
-        print(response_doc)
         if check:
             helpers._check_command_response(response_doc, None, allowable_errors)
 
