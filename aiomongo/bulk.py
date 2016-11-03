@@ -149,7 +149,7 @@ class Bulk:
         else:
             generator = self.gen_unordered()
 
-        connection = self.collection.database.client.get_connection()
+        connection = await self.collection.database.client.get_connection()
 
         if not write_concern.acknowledged:
             await self.execute_no_results(connection, generator)

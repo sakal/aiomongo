@@ -1,14 +1,17 @@
 import asyncio
 import logging
 import struct
+from typing import Optional, Union
 
 from bson import DEFAULT_CODEC_OPTIONS
 from pymongo import common, helpers, message
 from pymongo.ismaster import IsMaster
-from pymongo.errors import ConfigurationError, ProtocolError
+from pymongo.errors import ConfigurationError, ProtocolError, ConnectionFailure
 from pymongo.read_concern import DEFAULT_READ_CONCERN
-from pymongo.read_preferences import ReadPreference
+from pymongo.read_preferences import ReadPreference, _ALL_READ_PREFERENCES
 from pymongo.server_type import SERVER_TYPE
+
+from .utils import IncrementalSleeper
 
 logger = logging.getLogger('aiomongo.connection')
 
@@ -18,9 +21,13 @@ INT_MAX = 2147483647
 
 class Connection:
 
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        self.reader = reader
-        self.writer = writer
+    def __init__(self, host: str, port: int, loop: asyncio.AbstractEventLoop,
+                 read_preference: Union[_ALL_READ_PREFERENCES] = ReadPreference.PRIMARY):
+        self.host = host
+        self.port = port
+        self.loop = loop
+        self.reader = None
+        self.writer = None
         self.read_loop_task = None
         self.is_mongos = False
         self.is_writable = False
@@ -28,35 +35,57 @@ class Connection:
         self.max_message_size = common.MAX_MESSAGE_SIZE
         self.max_wire_version = 0
         self.max_write_batch_size = common.MAX_WRITE_BATCH_SIZE
+        self.read_preference = read_preference
         self.slave_ok = False
 
+        self.__connected = asyncio.Event(loop=loop)
         self.__request_id = 0
         self.__request_futures = {}
+        self.__sleeper = IncrementalSleeper(loop)
 
     @classmethod
-    async def create(cls, loop, host: str, port: int=27017, read_preference=ReadPreference.PRIMARY):
-        reader, writer = await asyncio.open_connection(host=host, port=port, loop=loop)
-        logging.debug('Established connection to {}:{}'.format(host, port))
-        conn = cls(reader, writer)
-        conn.read_loop_task = asyncio.ensure_future(conn.read_loop(), loop=loop)
+    async def create(cls, loop: asyncio.AbstractEventLoop, host: str, port: int=27017,
+                     read_preference=ReadPreference.PRIMARY) -> 'Connection':
+        conn = cls(host, port, loop, read_preference)
+        await conn.connect()
+        return conn
 
-        ismaster = IsMaster(await conn.command(
+    async def connect(self) -> None:
+        self.reader, self.writer = await asyncio.open_connection(
+            host=self.host, port=self.port, loop=self.loop
+        )
+        logger.debug('Established connection to {}:{}'.format(self.host, self.port))
+        self.read_loop_task = asyncio.ensure_future(self.read_loop(), loop=self.loop)
+
+        ismaster = IsMaster(await self.command(
             'admin', {'ismaster': 1}, ReadPreference.PRIMARY, DEFAULT_CODEC_OPTIONS
         ))
 
-        conn.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
-        conn.max_wire_version = ismaster.max_wire_version
+        self.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
+        self.max_wire_version = ismaster.max_wire_version
         if ismaster.max_bson_size:
-            conn.max_bson_size = ismaster.max_bson_size
+            self.max_bson_size = ismaster.max_bson_size
         if ismaster.max_message_size:
-            conn.max_message_size = ismaster.max_message_size
+            self.max_message_size = ismaster.max_message_size
         if ismaster.max_write_batch_size:
-            conn.max_write_batch_size = ismaster.max_write_batch_size
-        conn.is_writable = ismaster.is_writable
+            self.max_write_batch_size = ismaster.max_write_batch_size
+        self.is_writable = ismaster.is_writable
 
-        conn.slave_ok = not conn.is_mongos and read_preference != ReadPreference.PRIMARY
+        self.slave_ok = not self.is_mongos and self.read_preference != ReadPreference.PRIMARY
 
-        return conn
+        # Notify waiters that connection has been established
+        self.__connected.set()
+
+    async def reconnect(self) -> None:
+        while True:
+            try:
+                await self.connect()
+            except Exception as e:
+                logger.error('Failed to reconnect: {}'.format(e))
+                await self.__sleeper.sleep()
+            else:
+                self.__sleeper.reset()
+                return
 
     def gen_request_id(self) -> int:
         while self.__request_id in self.__request_futures:
@@ -67,21 +96,28 @@ class Connection:
         return self.__request_id
 
     async def perform_operation(self, operation) -> bytes:
-        message = operation.get_message(self.slave_ok, self.is_mongos, True)
+        request_id = None
 
-        request_id, data, _ = self._split_message(message)
-        response_future = asyncio.Future()
+        # Because pymongo uses rand() function internally to generate request_id
+        # there is a possibility that we have more than one in-flight request with
+        # the same id. To avoid this we rerun get_message function that regenerates
+        # query with new request id. In most cases this loop will run only once.
+        while request_id is None or request_id in self.__request_futures:
+            msg = operation.get_message(self.slave_ok, self.is_mongos, True)
+            request_id, data, _ = self._split_message(msg)
+
+        response_future = asyncio.Future(loop=self.loop)
         self.__request_futures[request_id] = response_future
 
         await self.send_message(data)
 
         return await response_future
 
-    async def write_command(self, request_id: int, message: bytes) -> dict:
-        response_future = asyncio.Future()
+    async def write_command(self, request_id: int, msg: bytes) -> dict:
+        response_future = asyncio.Future(loop=self.loop)
         self.__request_futures[request_id] = response_future
 
-        await self.send_message(message)
+        await self.send_message(msg)
 
         response_data = await response_future
         response = helpers._unpack_response(response_data)
@@ -93,8 +129,8 @@ class Connection:
         helpers._check_command_response(result)
         return result
 
-    async def send_message(self, message: bytes) -> None:
-        self.writer.write(message)
+    async def send_message(self, msg: bytes) -> None:
+        self.writer.write(msg)
         await self.writer.drain()
 
     async def command(self, dbname, spec, read_preference, codec_options, check=True,
@@ -125,7 +161,7 @@ class Connection:
                                               None, codec_options, check_keys)
 
         if (max_bson_size is not None
-            and size > max_bson_size + message._COMMAND_OVERHEAD):
+                and size > max_bson_size + message._COMMAND_OVERHEAD):
             message._raise_document_too_large(
                 name, size, max_bson_size + message._COMMAND_OVERHEAD)
 
@@ -144,17 +180,18 @@ class Connection:
 
         return response_doc
 
-    def _split_message(self, message):
+    @staticmethod
+    def _split_message(msg: tuple) -> tuple:
         """Return request_id, data, max_doc_size.
 
         :Parameters:
           - `message`: (request_id, data, max_doc_size) or (request_id, data)
         """
-        if len(message) == 3:
-            return message
+        if len(msg) == 3:
+            return msg
         else:
             # get_more and kill_cursors messages don't include BSON documents.
-            request_id, data = message
+            request_id, data = msg
             return request_id, data, 0
 
     async def read_loop(self):
@@ -162,12 +199,19 @@ class Connection:
         while True:
             try:
                 await self._read_loop_step()
-            except (EOFError, asyncio.CancelledError, ProtocolError) as e:
-                logging.debug('Closing connection due to error: {}'.format(e))
-                self.close()
+            except (EOFError, ProtocolError) as e:
+                self.__connected.clear()
+                connection_error = ConnectionFailure('Connection was lost due to: {}'.format(str(e)))
+                self.close(error=connection_error)
                 for ft in self.__request_futures.values():
-                    ft.set_exception(e)
+                    ft.set_exception(connection_error)
                 self.__request_futures = {}
+                await self.reconnect()
+                return
+            except asyncio.CancelledError:
+                connection_error = ConnectionFailure('Shutting down.')
+                for ft in self.__request_futures.values():
+                    ft.set_exception(connection_error)
                 return
 
     async def _read_loop_step(self):
@@ -189,8 +233,14 @@ class Connection:
         if not ft.cancelled():
             ft.set_result(message_data)
 
-    def close(self):
-        if self.read_loop_task is not None:
+    async def wait_connected(self) -> None:
+        """Returns when connection is ready to be used"""
+        await self.__connected.wait()
+
+    def close(self, error: Optional[Exception] = None) -> None:
+        if error is not None:
+            logger.error(str(error))
+        elif self.read_loop_task is not None:
             self.read_loop_task.cancel()
 
         self.writer.close()

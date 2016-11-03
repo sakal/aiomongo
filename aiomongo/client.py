@@ -42,10 +42,15 @@ class AioMongoClient:
     def __getattr__(self, item: str) -> Database:
         return self.__getitem__(item)
 
-    def get_connection(self) -> Connection:
+    async def get_connection(self) -> Connection:
+        """ Gets connection from pool and waits for it to be ready
+            to work.
+        """
         # Get the next protocol available for communication in the pool.
         connection = self._pool[self._index]
         self._index = (self._index + 1) % len(self._pool)
+
+        await connection.wait_connected()
 
         return connection
 

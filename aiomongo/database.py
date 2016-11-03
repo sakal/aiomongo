@@ -146,7 +146,7 @@ class Database:
 
         """
 
-        connection = self.client.get_connection()
+        connection = await self.client.get_connection()
 
         return await self._command(
             connection, command, value, check, allowable_errors, read_preference,
@@ -173,7 +173,7 @@ class Database:
           - `include_system_collections` (optional): if ``False`` list
             will not include system collections (e.g ``system.indexes``)
         """
-        connection = self.client.get_connection()
+        connection = await self.client.get_connection()
 
         results_cursor = await self._list_collections(connection)
 
@@ -310,7 +310,7 @@ class Database:
           - `include_all` (optional): if ``True`` also list currently
             idle operations in the result
         """
-        connection = self.client.get_connection()
+        connection = await self.client.get_connection()
         if connection.max_wire_version < 4:
             raise NotImplementedError('Only implemented from wired protocol version >= 4')
 

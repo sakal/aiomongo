@@ -127,7 +127,7 @@ class Cursor:
 
         return self.__spec
 
-    def __check_okay_to_chain(self):
+    def __check_okay_to_chain(self) -> None:
         """Check if it is okay to chain more options onto this cursor.
         """
         if self.__retrieved or self.__id is not None:
@@ -151,7 +151,7 @@ class Cursor:
             return 0
 
         if self.__connection is None:
-            self.__connection = self.__collection.database.client.get_connection()
+            self.__connection = await self.__collection.database.client.get_connection()
 
         is_query = False
         if self.__id is None:

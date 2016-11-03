@@ -98,7 +98,7 @@ class Collection:
 
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         if connection.max_wire_version >= 4 and 'readConcern' not in cmd:
             if pipeline and '$out' in pipeline[-1]:
@@ -133,7 +133,7 @@ class Collection:
         if max_time_ms is not None:
             cmd['maxTimeMS'] = max_time_ms
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         result = await connection.command(
             self.database.name, cmd, self.read_preference, self.__write_response_codec_options,
@@ -225,7 +225,7 @@ class Collection:
         index.update(kwargs)
 
         cmd = SON([('createIndexes', self.name), ('indexes', [index])])
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
         return name
@@ -262,7 +262,7 @@ class Collection:
             kwargs['query'] = filter
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         return (await connection.command(
             self.database.name, cmd, self.read_preference, self.codec_options,
@@ -297,7 +297,7 @@ class Collection:
             raise TypeError('index_or_name must be an index name or list')
 
         cmd = SON([('dropIndexes', self.name), ('index', name)])
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         await connection.command(
             self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options,
             allowable_errors=['ns not found']
@@ -448,7 +448,7 @@ class Collection:
         cmd = SON([('group', group)])
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         return await connection.command(
             self.database.name, cmd, self.read_preference, self.codec_options
@@ -462,7 +462,7 @@ class Collection:
         write_concern = self.write_concern.document
         acknowledged = write_concern.get('w') != 0
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         if acknowledged:
             command = SON([('insert', self.name),
@@ -507,7 +507,7 @@ class Collection:
         if acknowledged:
             await blk.execute(write_concern)
         else:
-            connection = self.database.client.get_connection()
+            connection = await self.database.client.get_connection()
             _, msg, _ = message.insert(
                 str(self), documents, False,
                 acknowledged, write_concern, False, self.__write_response_codec_options
@@ -614,7 +614,7 @@ class Collection:
         common.validate_is_mapping('filter', filter)
         common.validate_ok_for_replace(replacement)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         result = await self._update(
             connection, filter, replacement, upsert,
@@ -666,7 +666,7 @@ class Collection:
         common.validate_is_mapping('filter', filter)
         common.validate_ok_for_update(update)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         result = await self._update(
             connection, filter, update, upsert, check_keys=False,
             bypass_doc_val=bypass_document_validation
@@ -716,7 +716,7 @@ class Collection:
         common.validate_is_mapping('filter', filter)
         common.validate_ok_for_update(update)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         result = await self._update(
             connection, filter, update, upsert,
             check_keys=False, multi=True,
@@ -771,7 +771,7 @@ class Collection:
           - An instance of :class:`~pymongo.results.DeleteResult`.
         """
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         result = await self._delete(connection, filter, False)
         return DeleteResult(result, self.write_concern.acknowledged)
 
@@ -791,7 +791,7 @@ class Collection:
         :Returns:
           - An instance of :class:`~pymongo.results.DeleteResult`.
         """
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         result = await self._delete(connection, filter, True)
         return DeleteResult(result, self.write_concern.acknowledged)
 
@@ -804,7 +804,7 @@ class Collection:
         """
         cmd = SON([('reIndex', self.name)])
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
 
@@ -851,7 +851,7 @@ class Collection:
                    ('out', out)])
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         if connection.max_wire_version >= 4 and 'readConcern' not in cmd and 'inline' in cmd['out']:
             response = await connection.command(
@@ -901,7 +901,7 @@ class Collection:
                    ('out', {'inline': 1})])
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         if connection.max_wire_version >= 4 and 'readConcern' not in cmd:
             res = await connection.command(
@@ -937,7 +937,7 @@ class Collection:
 
         cmd = SON([('listIndexes', self.name), ('cursor', {})])
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
 
         cursor = (await connection.command(
             self.database.name, cmd, ReadPreference.PRIMARY, codec_options
@@ -974,7 +974,7 @@ class Collection:
         cmd = SON([('renameCollection', str(self)), ('to', new_name)])
         cmd.update(kwargs)
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         await connection.command('admin', cmd, ReadPreference.PRIMARY, self.codec_options)
 
     async def index_information(self) -> dict:
@@ -1063,7 +1063,7 @@ class Collection:
             common.validate_boolean('upsert', upsert)
             cmd['upsert'] = upsert
 
-        connection = self.database.client.get_connection()
+        connection = await self.database.client.get_connection()
         if connection.max_wire_version >= 4 and 'writeConcern' not in cmd:
             wc_doc = self.write_concern.document
             if wc_doc:
