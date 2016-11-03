@@ -93,14 +93,14 @@ class Bulk:
         """
         # nModified is only reported for write commands, not legacy ops.
         full_result = {
-            "writeErrors": [],
-            "writeConcernErrors": [],
-            "nInserted": 0,
-            "nUpserted": 0,
-            "nMatched": 0,
-            "nModified": 0,
-            "nRemoved": 0,
-            "upserted": [],
+            'writeErrors': [],
+            'writeConcernErrors': [],
+            'nInserted': 0,
+            'nUpserted': 0,
+            'nMatched': 0,
+            'nModified': 0,
+            'nRemoved': 0,
+            'upserted': [],
         }
 
         for run in generator:

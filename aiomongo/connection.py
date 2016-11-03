@@ -1,16 +1,20 @@
 import asyncio
 import logging
 import struct
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from bson import DEFAULT_CODEC_OPTIONS
+from bson.codec_options import CodecOptions
+from bson.son import SON
 from pymongo import common, helpers, message
+from pymongo.client_options import ClientOptions
 from pymongo.ismaster import IsMaster
 from pymongo.errors import ConfigurationError, ProtocolError, ConnectionFailure
-from pymongo.read_concern import DEFAULT_READ_CONCERN
+from pymongo.read_concern import DEFAULT_READ_CONCERN, ReadConcern
 from pymongo.read_preferences import ReadPreference, _ALL_READ_PREFERENCES
 from pymongo.server_type import SERVER_TYPE
 
+from .auth import get_authenticator
 from .utils import IncrementalSleeper
 
 logger = logging.getLogger('aiomongo.connection')
@@ -21,8 +25,8 @@ INT_MAX = 2147483647
 
 class Connection:
 
-    def __init__(self, host: str, port: int, loop: asyncio.AbstractEventLoop,
-                 read_preference: Union[_ALL_READ_PREFERENCES] = ReadPreference.PRIMARY):
+    def __init__(self, loop: asyncio.AbstractEventLoop, host: str, port: int,
+                 options: ClientOptions):
         self.host = host
         self.port = port
         self.loop = loop
@@ -35,7 +39,7 @@ class Connection:
         self.max_message_size = common.MAX_MESSAGE_SIZE
         self.max_wire_version = 0
         self.max_write_batch_size = common.MAX_WRITE_BATCH_SIZE
-        self.read_preference = read_preference
+        self.options = options
         self.slave_ok = False
 
         self.__connected = asyncio.Event(loop=loop)
@@ -44,9 +48,9 @@ class Connection:
         self.__sleeper = IncrementalSleeper(loop)
 
     @classmethod
-    async def create(cls, loop: asyncio.AbstractEventLoop, host: str, port: int=27017,
-                     read_preference=ReadPreference.PRIMARY) -> 'Connection':
-        conn = cls(host, port, loop, read_preference)
+    async def create(cls, loop: asyncio.AbstractEventLoop, host: str, port: int,
+                     options: ClientOptions) -> 'Connection':
+        conn = cls(loop, host, port, options)
         await conn.connect()
         return conn
 
@@ -58,7 +62,7 @@ class Connection:
         self.read_loop_task = asyncio.ensure_future(self.read_loop(), loop=self.loop)
 
         ismaster = IsMaster(await self.command(
-            'admin', {'ismaster': 1}, ReadPreference.PRIMARY, DEFAULT_CODEC_OPTIONS
+            'admin', SON([('ismaster', 1)]), ReadPreference.PRIMARY, DEFAULT_CODEC_OPTIONS
         ))
 
         self.is_mongos = ismaster.server_type == SERVER_TYPE.Mongos
@@ -71,7 +75,10 @@ class Connection:
             self.max_write_batch_size = ismaster.max_write_batch_size
         self.is_writable = ismaster.is_writable
 
-        self.slave_ok = not self.is_mongos and self.read_preference != ReadPreference.PRIMARY
+        self.slave_ok = not self.is_mongos and self.options.read_preference != ReadPreference.PRIMARY
+
+        if self.options.credentials:
+            await self._authenticate()
 
         # Notify waiters that connection has been established
         self.__connected.set()
@@ -133,9 +140,12 @@ class Connection:
         self.writer.write(msg)
         await self.writer.drain()
 
-    async def command(self, dbname, spec, read_preference, codec_options, check=True,
-                      allowable_errors=None, check_keys=False, max_bson_size=None,
-                      read_concern=DEFAULT_READ_CONCERN):
+    async def command(self, dbname: str, spec: SON,
+                      read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
+                      codec_options: Optional[CodecOptions] = None, check: bool = True,
+                      allowable_errors: Optional[List[str]] = None, check_keys: bool = False,
+                      max_bson_size: Optional[int] =None,
+                      read_concern: ReadConcern = DEFAULT_READ_CONCERN):
 
         if self.max_wire_version < 4 and not read_concern.ok_for_legacy:
             raise ConfigurationError(
@@ -143,6 +153,9 @@ class Connection:
                     read_concern.level, self.max_wire_version
                 )
             )
+
+        read_preference = read_preference or self.options.read_preference
+        codec_options = codec_options or self.options.codec_options
 
         name = next(iter(spec))
         ns = dbname + '.$cmd'
@@ -175,10 +188,17 @@ class Connection:
 
         unpacked = helpers._unpack_response(response, codec_options=codec_options)
         response_doc = unpacked['data'][0]
+        print(response_doc)
         if check:
             helpers._check_command_response(response_doc, None, allowable_errors)
 
         return response_doc
+
+    async def _authenticate(self) -> None:
+        authenticator = get_authenticator(
+            self.options.credentials.mechanism
+        )
+        await authenticator(self.options.credentials, self)
 
     @staticmethod
     def _split_message(msg: tuple) -> tuple:

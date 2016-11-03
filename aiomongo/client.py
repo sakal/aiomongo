@@ -32,7 +32,7 @@ class AioMongoClient:
     async def connect(self) -> None:
         self._pool = await asyncio.gather(
             *[Connection.create(
-                self.loop, self.host, self.port, self.options.read_preference
+                self.loop, self.host, self.port, self.options
             ) for _ in range(self.options.pool_options.max_pool_size)]
         )
 
