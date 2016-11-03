@@ -99,6 +99,27 @@ class AioMongoClient:
             self, name, read_preference, read_concern,
             codec_options, write_concern)
 
+    async def drop_database(self, name_or_database: Union[str, Database]):
+        """Drop a database.
+
+        Raises :class:`TypeError` if `name_or_database` is not an instance of
+        :class:`basestring` (:class:`str` in python 3) or
+        :class:`~aiomongo.database.Database`.
+
+        :Parameters:
+          - `name_or_database`: the name of a database to drop, or a
+            :class:`~aiomongo.database.Database` instance representing the
+            database to drop
+        """
+        name = name_or_database
+        if isinstance(name, Database):
+            name = name.name
+
+        if not isinstance(name, str):
+            raise TypeError('name_or_database must be an instance of str or a Database')
+
+        await self[name].command('dropDatabase')
+
     def get_default_database(self) -> Database:
         """Get the database named in the MongoDB connection URI.
 
@@ -118,3 +139,6 @@ class AioMongoClient:
     def close(self) -> None:
         for conn in self._pool:
             conn.close()
+
+    async def wait_closed(self) -> None:
+        await asyncio.wait([conn.wait_closed() for conn in self._pool], loop=self.loop)

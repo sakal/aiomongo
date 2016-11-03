@@ -159,18 +159,18 @@ class Collection:
         To create a single key ascending index on the key ``'mike'`` we just
         use a string argument::
 
-          >>> await my_collection.create_index("mike")
+          >>> await my_collection.create_index('mike')
 
         For a compound index on ``'mike'`` descending and ``'eliot'``
         ascending we need to use a list of tuples::
 
-          >>> await my_collection.create_index([("mike", pymongo.DESCENDING),
-          ...                             ("eliot", pymongo.ASCENDING)])
+          >>> await my_collection.create_index([('mike', pymongo.DESCENDING),
+          ...                             ('eliot', pymongo.ASCENDING)])
 
         All optional index creation parameters should be passed as
         keyword arguments to this method. For example::
 
-          >>> await my_collection.create_index([("mike", pymongo.DESCENDING)],
+          >>> await my_collection.create_index([('mike', pymongo.DESCENDING)],
           ...                            background=True)
 
         Valid options include, but are not limited to:
@@ -1290,6 +1290,42 @@ class Collection:
         return await self.__find_and_modify(filter, projection,
                                             sort, upsert, return_document, **kwargs)
 
+    async def drop(self):
+        """Alias for :meth:`~aiomongo.database.Database.drop_collection`.
+
+        The following two calls are equivalent:
+
+          >>> await db.foo.drop()
+          >>> await db.drop_collection('foo')
+        """
+        await self.database.drop_collection(self.name)
+
+    def __eq__(self, other):
+        if isinstance(other, Collection):
+            return (self.database == other.database and
+                    self.name == other.name)
+        return NotImplemented
+
+    def __getattr__(self, name):
+        """Get a sub-collection of this collection by name.
+
+        Raises InvalidName if an invalid collection name is used.
+
+        :Parameters:
+          - `name`: the name of the collection to get
+        """
+        if name.startswith('_'):
+            full_name = '{}.{}'.format(self.name, name)
+            raise AttributeError(
+                'Collection has no attribute {}. To access the {}'
+                ' collection, use database["{}"].'.format(
+                    name, full_name, full_name))
+        return self.__getitem__(name)
+
+    def __getitem__(self, name):
+        full_name = '{}.{}'.format(self.name, name)
+        return Collection(self.database, full_name)
+
     def __iter__(self) -> 'Collection':
         return self
 
@@ -1303,7 +1339,7 @@ class Collection:
             raise TypeError('"Collection" object is not callable. If you '
                             'meant to call the "{}" method on a "Database" '
                             'object it is failing because no such method '
-                            "exists.".format(self.name))
+                            'exists.'.format(self.name))
         raise TypeError('"Collection" object is not callable. If you meant to '
                         'call the "{}" method on a "Collection" object it is '
-                        'failing because no such method exists.'.format(self.name.split(".")[-1]))
+                        'failing because no such method exists.'.format(self.name.split('.')[-1]))

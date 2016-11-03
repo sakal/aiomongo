@@ -73,6 +73,12 @@ class Database:
     def __str__(self) -> str:
         return self.name
 
+    def __eq__(self, other):
+        if isinstance(other, Database):
+            return (self.client == other.client and
+                    self.name == other.name)
+        return NotImplemented
+
     async def _command(self, connection: 'aiomongo.Connection', command: Union[str, dict], value: Any=1,
                        check: bool = True, allowable_errors: Optional[List[str]] = None,
                        read_preference: Union[_ALL_READ_PREFERENCES] = ReadPreference.PRIMARY,
@@ -381,7 +387,7 @@ class Database:
         result = []
         async with coll.find() as cursor:
             async for item in cursor:
-                item.append(result)
+                result.append(item)
 
         return result
 

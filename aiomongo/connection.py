@@ -43,6 +43,7 @@ class Connection:
         self.slave_ok = False
 
         self.__connected = asyncio.Event(loop=loop)
+        self.__disconnected = asyncio.Event(loop=loop)
         self.__request_id = 0
         self.__request_futures = {}
         self.__sleeper = IncrementalSleeper(loop)
@@ -224,7 +225,6 @@ class Connection:
             return request_id, data, 0
 
     async def read_loop(self):
-
         while True:
             try:
                 await self._read_loop_step()
@@ -241,6 +241,7 @@ class Connection:
                 connection_error = ConnectionFailure('Shutting down.')
                 for ft in self.__request_futures.values():
                     ft.set_exception(connection_error)
+                self.__disconnected.set()
                 return
 
     async def _read_loop_step(self):
@@ -272,4 +273,8 @@ class Connection:
         elif self.read_loop_task is not None:
             self.read_loop_task.cancel()
 
-        self.writer.close()
+        if self.writer is not None:
+            self.writer.close()
+
+    async def wait_closed(self) -> None:
+        await self.__disconnected.wait()
