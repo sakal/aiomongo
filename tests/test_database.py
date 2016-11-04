@@ -1,7 +1,12 @@
 import datetime
+import re
 
 import pytest
+from bson import DBRef, ObjectId
 from bson.codec_options import CodecOptions
+from bson.int64 import Int64
+from bson.regex import Regex
+from bson.son import SON
 from pymongo import ALL, OFF, SLOW_ONLY
 from pymongo.errors import OperationFailure
 from pymongo.read_concern import ReadConcern
@@ -14,10 +19,10 @@ from aiomongo import Database, Collection
 class TestDatabase:
 
     @pytest.mark.asyncio
-    async def test_command_buildinfo(self, test_db):
+    async def test_command(self, mongo):
 
-        build_info = await test_db.command('buildinfo')
-        assert build_info.get('ok') == 1.0
+        db = mongo.admin
+        assert await db.command('buildinfo') == await db.command({'buildinfo': 1})
 
     @pytest.mark.asyncio
     async def test_get_collection(self, test_db):
@@ -198,3 +203,116 @@ class TestDatabase:
         assert isinstance(info[0]['ns'], str)
         assert isinstance(info[0]['op'], str)
         assert isinstance(info[0]['ts'], datetime.datetime)
+
+    @pytest.mark.asyncio
+    async def test_command_with_regex(self, test_db):
+        await test_db.test.insert_one({'r': re.compile('.*')})
+        await test_db.test.insert_one({'r': Regex('.*')})
+
+        result = await test_db.command('aggregate', 'test', pipeline=[])
+        for doc in result['result']:
+            assert isinstance(doc['r'], Regex)
+
+    @pytest.mark.asyncio
+    async def test_deref(self, test_db):
+        with pytest.raises(TypeError):
+            await test_db.dereference(5)
+        with pytest.raises(TypeError):
+            await test_db.dereference('hello')
+        with pytest.raises(TypeError):
+            await test_db.dereference(None)
+
+        assert await test_db.dereference(DBRef("test", ObjectId())) is None
+        obj = {'x': True}
+        key = (await test_db.test.insert_one(obj)).inserted_id
+        assert await test_db.dereference(DBRef('test', key)) == obj
+        assert await test_db.dereference(DBRef('test', key, 'aiomongo_test')) == obj
+
+        with pytest.raises(ValueError):
+            await test_db.dereference(DBRef('test', key, 'foo'))
+
+        assert await test_db.dereference(DBRef('test', 4)) is None
+        obj = {'_id': 4}
+        await test_db.test.insert_one(obj)
+        assert await test_db.dereference(DBRef('test', 4)) == obj
+
+    @pytest.mark.asyncio
+    async def test_deref_kwargs(self, mongo, test_db):
+        await test_db.test.insert_one({'_id': 4, 'foo': 'bar'})
+        db = mongo.get_database(
+            'aiomongo_test', codec_options=CodecOptions(document_class=SON))
+        assert SON([('foo', 'bar')]) == await db.dereference(DBRef('test', 4), projection={'_id': False})
+
+    @pytest.mark.asyncio
+    async def test_insert_find_one(self, test_db):
+        a_doc = SON({'hello': 'world'})
+        a_key = (await test_db.test.insert_one(a_doc)).inserted_id
+        assert isinstance(a_doc['_id'], ObjectId)
+        assert a_doc['_id'] == a_key
+        assert a_doc == await test_db.test.find_one({'_id': a_doc['_id']})
+        assert a_doc == await test_db.test.find_one(a_key)
+        assert await test_db.test.find_one(ObjectId()) is None
+        assert a_doc == await test_db.test.find_one({'hello': 'world'})
+        assert await test_db.test.find_one({'hello': 'test'}) is None
+
+        b = await test_db.test.find_one()
+        b['hello'] = 'mike'
+        await test_db.test.replace_one({'_id': b['_id']}, b)
+
+        assert a_doc != await test_db.test.find_one(a_key)
+        assert b == await test_db.test.find_one(a_key)
+        assert b == await test_db.test.find_one()
+
+        count = 0
+
+        async with test_db.test.find() as cursor:
+            async for _ in cursor:
+                count += 1
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_long(self, test_db):
+        await test_db.test.insert_one({'x': 9223372036854775807})
+        retrieved = (await test_db.test.find_one())['x']
+        assert Int64(9223372036854775807) == retrieved
+        assert isinstance(retrieved, Int64)
+        await test_db.test.delete_many({})
+        await test_db.test.insert_one({'x': Int64(1)})
+        retrieved = (await test_db.test.find_one())['x']
+        assert Int64(1) == retrieved
+        assert isinstance(retrieved, Int64)
+
+    @pytest.mark.asyncio
+    async def test_delete(self, test_db):
+        await test_db.test.insert_one({'x': 1})
+        await test_db.test.insert_one({'x': 2})
+        await test_db.test.insert_one({'x': 3})
+        length = 0
+        async with test_db.test.find() as cursor:
+            async for _ in cursor:
+                length += 1
+        assert length == 3
+
+        await test_db.test.delete_one({'x': 1})
+        length = 0
+        async with test_db.test.find() as cursor:
+            async for _ in cursor:
+                length += 1
+        assert length == 2
+
+        await test_db.test.delete_one(await test_db.test.find_one())
+        await test_db.test.delete_one(await test_db.test.find_one())
+        assert await test_db.test.find_one() is None
+
+        await test_db.test.insert_one({'x': 1})
+        await test_db.test.insert_one({'x': 2})
+        await test_db.test.insert_one({'x': 3})
+
+        assert await test_db.test.find_one({'x': 2})
+        await test_db.test.delete_one({'x': 2})
+        assert not await test_db.test.find_one({'x': 2})
+
+        assert await test_db.test.find_one()
+        await test_db.test.delete_many({})
+        assert not await test_db.test.find_one()
+

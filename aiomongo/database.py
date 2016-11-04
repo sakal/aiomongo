@@ -194,6 +194,59 @@ class Database:
 
         return names
 
+    async def create_collection(self, name, codec_options=None,
+                                read_preference=None, write_concern=None,
+                                read_concern=None, **kwargs):
+        """Create a new :class:`~pymongo.collection.Collection` in this
+        database.
+
+        Normally collection creation is automatic. This method should
+        only be used to specify options on
+        creation. :class:`~pymongo.errors.CollectionInvalid` will be
+        raised if the collection already exists.
+
+        Options should be passed as keyword arguments to this method. Supported
+        options vary with MongoDB release. Some examples include:
+
+          - "size": desired initial size for the collection (in
+            bytes). For capped collections this size is the max
+            size of the collection.
+          - "capped": if True, this is a capped collection
+          - "max": maximum number of objects if capped (optional)
+
+        See the MongoDB documentation for a full list of supported options by
+        server version.
+
+        :Parameters:
+          - `name`: the name of the collection to create
+          - `codec_options` (optional): An instance of
+            :class:`~bson.codec_options.CodecOptions`. If ``None`` (the
+            default) the :attr:`codec_options` of this :class:`Database` is
+            used.
+          - `read_preference` (optional): The read preference to use. If
+            ``None`` (the default) the :attr:`read_preference` of this
+            :class:`Database` is used.
+          - `write_concern` (optional): An instance of
+            :class:`~pymongo.write_concern.WriteConcern`. If ``None`` (the
+            default) the :attr:`write_concern` of this :class:`Database` is
+            used.
+          - `read_concern` (optional): An instance of
+            :class:`~pymongo.read_concern.ReadConcern`. If ``None`` (the
+            default) the :attr:`read_concern` of this :class:`Database` is
+            used.
+          - `**kwargs` (optional): additional keyword arguments will
+            be passed as options for the create collection command
+
+        """
+        if name in await self.collection_names():
+            raise CollectionInvalid("collection %s already exists" % name)
+
+        coll = Collection(self, name, read_preference, read_concern,
+                          codec_options, write_concern)
+        await coll._create(kwargs)
+
+        return coll
+
     async def drop_collection(self, name_or_collection: Union[str, Collection]) -> None:
         """Drop a collection.
 

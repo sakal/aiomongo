@@ -1,9 +1,9 @@
-import asyncio
 import os
 
 import pytest
 
 import aiomongo
+from .version import Version
 
 
 HOST = os.getenv('DB_IP', 'localhost')
@@ -24,5 +24,17 @@ def mongo(event_loop):
 @pytest.fixture(scope='function')
 def test_db(event_loop, mongo):
     db = mongo.get_default_database()
-    yield db
     event_loop.run_until_complete(mongo.drop_database(db))
+    return db
+
+
+@pytest.fixture(scope='function')
+def mongo_version(event_loop, mongo):
+    server_info = event_loop.run_until_complete(
+        mongo.server_info()
+    )
+    if 'versionArray' in server_info:
+        return Version.from_version_array(server_info['versionArray'])
+    return Version.from_string(server_info['version'])
+
+

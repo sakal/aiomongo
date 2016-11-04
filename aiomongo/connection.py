@@ -98,14 +98,19 @@ class Connection:
         while True:
             try:
                 await self.connect()
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                logger.error('Failed to reconnect: {}'.format(e))
+                logger.error('Failed to reconnect: {}'.format(str(e)))
                 await self.__sleeper.sleep()
             else:
                 self.__sleeper.reset()
                 return
 
     def gen_request_id(self) -> int:
+        """ Generates request unique request id for API that doesn't use rand()
+            function internally.
+        """
         while self.__request_id in self.__request_futures:
             self.__request_id += 1
             if self.__request_id >= INT_MAX:
@@ -127,7 +132,7 @@ class Connection:
         response_future = asyncio.Future(loop=self.loop)
         self.__request_futures[request_id] = response_future
 
-        await self.send_message(data)
+        self.send_message(data)
 
         return await response_future
 
@@ -135,7 +140,7 @@ class Connection:
         response_future = asyncio.Future(loop=self.loop)
         self.__request_futures[request_id] = response_future
 
-        await self.send_message(msg)
+        self.send_message(msg)
 
         response_data = await response_future
         response = helpers._unpack_response(response_data)
@@ -147,15 +152,13 @@ class Connection:
         helpers._check_command_response(result)
         return result
 
-    async def send_message(self, msg: bytes) -> None:
+    def send_message(self, msg: bytes) -> None:
         self.writer.write(msg)
-        await self.writer.drain()
 
     async def command(self, dbname: str, spec: SON,
                       read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
                       codec_options: Optional[CodecOptions] = None, check: bool = True,
                       allowable_errors: Optional[List[str]] = None, check_keys: bool = False,
-                      max_bson_size: Optional[int] =None,
                       read_concern: ReadConcern = DEFAULT_READ_CONCERN):
 
         if self.max_wire_version < 4 and not read_concern.ok_for_legacy:
@@ -181,19 +184,20 @@ class Connection:
         if read_concern.level:
             spec['readConcern'] = read_concern.document
 
-        request_id, msg, size = message.query(flags, ns, 0, -1, spec,
-                                              None, codec_options, check_keys)
+        # See explanation in perform_operation method
+        request_id = None
+        while request_id is None or request_id in self.__request_futures:
+            request_id, msg, size = message.query(flags, ns, 0, -1, spec,
+                                                  None, codec_options, check_keys)
 
-        if (max_bson_size is not None
-                and size > max_bson_size + message._COMMAND_OVERHEAD):
+        if size > self.max_bson_size + message._COMMAND_OVERHEAD:
             message._raise_document_too_large(
-                name, size, max_bson_size + message._COMMAND_OVERHEAD)
+                name, size, self.max_bson_size + message._COMMAND_OVERHEAD)
 
         response_future = asyncio.Future()
         self.__request_futures[request_id] = response_future
 
-        self.writer.write(msg)
-        await self.writer.drain()
+        self.send_message(msg)
 
         response = await response_future
 
@@ -235,16 +239,22 @@ class Connection:
                 for ft in self.__request_futures.values():
                     ft.set_exception(connection_error)
                 self.__request_futures = {}
-                await self.reconnect()
+                try:
+                    await self.reconnect()
+                except asyncio.CancelledError:
+                    self._shut_down()
                 return
             except asyncio.CancelledError:
-                connection_error = ConnectionFailure('Shutting down.')
-                for ft in self.__request_futures.values():
-                    ft.set_exception(connection_error)
-                self.__disconnected.set()
+                self._shut_down()
                 return
 
-    async def _read_loop_step(self):
+    def _shut_down(self) -> None:
+        connection_error = ConnectionFailure('Shutting down.')
+        for ft in self.__request_futures.values():
+            ft.set_exception(connection_error)
+        self.__disconnected.set()
+
+    async def _read_loop_step(self) -> None:
         header = await self.reader.readexactly(16)
         length, = struct.unpack('<i', header[:4])
         if length < 16:

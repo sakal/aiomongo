@@ -136,6 +136,10 @@ class AioMongoClient:
 
         return self[self.__default_database_name]
 
+    async def server_info(self) -> dict:
+        """Get information about the MongoDB server we're connected to."""
+        return await self.admin.command('buildinfo')
+
     def close(self) -> None:
         for conn in self._pool:
             conn.close()

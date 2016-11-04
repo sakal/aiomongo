@@ -3,11 +3,13 @@ from typing import Any, Iterable, Optional, Union, List, Tuple, MutableMapping
 
 from bson import ObjectId
 from bson.code import Code
+from bson.raw_bson import RawBSONDocument
 from bson.son import SON
 from bson.codec_options import CodecOptions
 from pymongo import common, helpers, message
 from pymongo.collection import ReturnDocument, _NO_OBJ_ERROR
-from pymongo.errors import ConfigurationError, InvalidName
+from pymongo.errors import ConfigurationError, InvalidName, OperationFailure
+from pymongo.operations import IndexModel
 from pymongo.read_concern import ReadConcern
 from pymongo.read_preferences import ReadPreference, _ALL_READ_PREFERENCES
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
@@ -24,6 +26,20 @@ class Collection:
                  read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
                  read_concern: Optional[ReadConcern] = None,
                  codec_options: Optional[CodecOptions] = None, write_concern: Optional[WriteConcern] = None):
+
+        if not name or '..' in name:
+            raise InvalidName('collection names cannot be empty')
+        if '$' in name and not (name.startswith('oplog.$main') or
+                                    name.startswith('$cmd')):
+            raise InvalidName('collection names must not '
+                              'contain "$": {}'.format(name))
+        if name[0] == '.' or name[-1] == '.':
+            raise InvalidName('collection names must not start '
+                              'or end with ".": {}'.format(name))
+        if '\x00' in name:
+            raise InvalidName('collection names must not contain the '
+                              'null character')
+
         self.database = database
         self.read_preference = read_preference or database.read_preference
         self.read_concern = read_concern or database.read_concern
@@ -90,11 +106,14 @@ class Collection:
         # Remove things that are not command options.
         batch_size = common.validate_positive_integer_or_none(
             'batchSize', kwargs.pop("batchSize", None))
+        use_cursor = common.validate_boolean(
+            'useCursor', kwargs.pop('useCursor', True))
 
-        if 'cursor' not in kwargs:
-            kwargs['cursor'] = {}
-        if batch_size is not None:
-            kwargs['cursor']['batchSize'] = batch_size
+        if use_cursor:
+            if 'cursor' not in kwargs:
+                kwargs['cursor'] = {}
+            if batch_size is not None:
+                kwargs['cursor']['batchSize'] = batch_size
 
         cmd.update(kwargs)
 
@@ -115,12 +134,20 @@ class Collection:
                 self.database.name, cmd, self.read_preference, self.codec_options
             )
 
-        cursor = result['cursor']
+        if 'cursor' in result:
+            cursor = result['cursor']
+        else:
+            cursor = {
+                'id': 0,
+                'firstBatch': result['result'],
+                'ns': self.full_name,
+            }
 
         return CommandCursor(connection, self, cursor).batch_size(batch_size or 0)
 
     async def count(self, filter: Optional[dict] = None, hint: Optional[Union[str, List[Tuple]]] = None,
-                    limit: Optional[int] = None, skip: Optional[int] = None, max_time_ms: Optional[int] = None) -> int:
+                    limit: Optional[int] = None, skip: Optional[int] = None, max_time_ms: Optional[int] = None,
+                    comment: Union[str, dict] = None) -> int:
         cmd = SON([('count', self.name)])
         if filter is not None:
             cmd['query'] = filter
@@ -132,6 +159,8 @@ class Collection:
             cmd['skip'] = skip
         if max_time_ms is not None:
             cmd['maxTimeMS'] = max_time_ms
+        if comment is not None:
+            cmd['$comment'] = comment
 
         connection = await self.database.client.get_connection()
 
@@ -230,7 +259,42 @@ class Collection:
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
         return name
 
-    async def distinct(self, key: str, filter: Optional[dict] = None, **kwargs) -> dict:
+    async def create_indexes(self, indexes: List[IndexModel]):
+        """Create one or more indexes on this collection.
+
+          >>> from pymongo import IndexModel, ASCENDING, DESCENDING
+          >>> index1 = IndexModel([('hello', DESCENDING),
+          ...                      ('world', ASCENDING)], name='hello_world')
+          >>> index2 = IndexModel([('goodbye', DESCENDING)])
+          >>> await db.test.create_indexes([index1, index2])
+          ['hello_world']
+
+        :Parameters:
+          - `indexes`: A list of :class:`~pymongo.operations.IndexModel`
+            instances.
+        """
+        if not isinstance(indexes, list):
+            raise TypeError('indexes must be a list')
+        names = []
+        documents = []
+
+        for index in indexes:
+            if not isinstance(index, IndexModel):
+                raise TypeError('{} is not an instance of '
+                                'pymongo.operations.IndexModel'.format(index,))
+            document = index.document
+            names.append(document['name'])
+            documents.append(document)
+
+        cmd = SON([('createIndexes', self.name),
+                   ('indexes', documents)])
+
+        connection = await self.database.client.get_connection()
+        await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
+
+        return names
+
+    async def distinct(self, key: str, filter: Optional[dict] = None, **kwargs) -> list:
         """Get a list of distinct values for `key` among all documents
         in this collection.
 
@@ -450,13 +514,16 @@ class Collection:
 
         connection = await self.database.client.get_connection()
 
-        return await connection.command(
+        return (await connection.command(
             self.database.name, cmd, self.read_preference, self.codec_options
-        )
+        ))['retval']
 
     async def insert_one(self, document: MutableMapping, bypass_document_validation: bool = False,
                          check_keys: bool = True) -> InsertOneResult:
-        if '_id' not in document:
+
+        common.validate_is_document_type('document', document)
+
+        if '_id' not in document and not isinstance(document, RawBSONDocument):
             document['_id'] = ObjectId()
 
         write_concern = self.write_concern.document
@@ -473,18 +540,25 @@ class Collection:
                 command['bypassDocumentValidation'] = True
 
             result = await connection.command(
-                self.database.name, command, ReadPreference.PRIMARY, self.codec_options
+                self.database.name, command, ReadPreference.PRIMARY, self.__write_response_codec_options,
+                check_keys=check_keys
             )
 
             helpers._check_write_command_response([(0, result)])
         else:
+            if bypass_document_validation and connection.max_wire_version >= 4:
+                raise OperationFailure('Cannot set bypass_document_validation with',
+                                       ' unacknowledged write concern')
+
             _, msg, _ = message.insert(
                 str(self), [document], check_keys,
                 acknowledged, write_concern, False, self.__write_response_codec_options
             )
-            await connection.send_message(msg)
+            connection.send_message(msg)
 
-        return InsertOneResult(document['_id'], acknowledged)
+        document_id = document['_id'] if not isinstance(document, RawBSONDocument) else None
+
+        return InsertOneResult(document_id, acknowledged)
 
     async def insert_many(self, documents: Iterable[dict], ordered: bool = True,
                           bypass_document_validation: bool = False) -> InsertManyResult:
@@ -494,25 +568,34 @@ class Collection:
 
         blk = Bulk(self, ordered, bypass_document_validation)
         inserted_ids = []
-        for document in documents:
-            common.validate_is_document_type('document', document)
-            if '_id' not in document:
-                document['_id'] = ObjectId()
-            blk.ops.append((message._INSERT, document))
-            inserted_ids.append(document['_id'])
 
         write_concern = self.write_concern.document
         acknowledged = write_concern.get('w') != 0
+
+        for document in documents:
+            common.validate_is_document_type('document', document)
+            # Don't inflate RawBSONDocument by touching fields.
+            is_raw_bson = isinstance(document, RawBSONDocument)
+            if '_id' not in document and not is_raw_bson:
+                document['_id'] = ObjectId()
+            if acknowledged:
+                blk.ops.append((message._INSERT, document))
+            if not is_raw_bson:
+                inserted_ids.append(document['_id'])
 
         if acknowledged:
             await blk.execute(write_concern)
         else:
             connection = await self.database.client.get_connection()
+
+            if bypass_document_validation and connection.max_wire_version >= 4:
+                raise OperationFailure('Cannot set bypass_document_validation with',
+                                       ' unacknowledged write concern')
             _, msg, _ = message.insert(
-                str(self), documents, False,
+                str(self), documents, True,
                 acknowledged, write_concern, False, self.__write_response_codec_options
             )
-            await connection.send_message(msg)
+            connection.send_message(msg)
 
         return InsertManyResult(inserted_ids, self.write_concern.acknowledged)
 
@@ -539,7 +622,8 @@ class Collection:
                 command['bypassDocumentValidation'] = True
 
             result = await connection.command(
-                self.database.name, command, ReadPreference.PRIMARY, self.codec_options
+                self.database.name, command, ReadPreference.PRIMARY,
+                codec_options=self.__write_response_codec_options
             )
             helpers._check_write_command_response([(0, result)])
 
@@ -553,11 +637,14 @@ class Collection:
                 if 'upserted' in result:
                     result['upserted'] = result['upserted'][0]['_id']
         else:
+            if bypass_doc_val and connection.max_wire_version >= 4:
+                raise OperationFailure('Cannot set bypass_document_validation with',
+                                       ' unacknowledged write concern')
             _, msg, _ = message.update(
                 str(self), upsert, multi, criteria, document, acknowledged, False,
                 check_keys, self.__write_response_codec_options
             )
-            await connection.send_message(msg)
+            connection.send_message(msg)
             result = None
 
         return result
@@ -750,7 +837,7 @@ class Collection:
             str(self), criteria, False, concern, self.__write_response_codec_options,
             int(not multi)
         )
-        await connection.send_message(msg)
+        connection.send_message(msg)
 
         return None
 
@@ -806,7 +893,9 @@ class Collection:
 
         connection = await self.database.client.get_connection()
 
-        await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
+        return await connection.command(
+            self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options
+        )
 
     async def map_reduce(self, map: Code, reduce: Code, out: str,
                          full_response: bool = False, **kwargs) -> Union[dict, 'Collection']:
@@ -870,7 +959,8 @@ class Collection:
         else:
             return self.database[response['result']]
 
-    async def inline_map_reduce(self, map: Code, reduce: Code, full_response: bool = False, **kwargs) -> dict:
+    async def inline_map_reduce(self, map: Code, reduce: Code, full_response: bool = False,
+                                **kwargs) -> Union[list, dict]:
         """Perform an inline map/reduce operation on this collection.
 
         Perform the map/reduce operation on the server in RAM. A result
@@ -1290,6 +1380,35 @@ class Collection:
         return await self.__find_and_modify(filter, projection,
                                             sort, upsert, return_document, **kwargs)
 
+    async def options(self) -> dict:
+        """Get the options set on this collection.
+
+        Returns a dictionary of options and their values - see
+        :meth:`~pymongo.database.Database.create_collection` for more
+        information on the possible options. Returns an empty
+        dictionary if the collection has not been created yet.
+        """
+
+        connection = await self.database.client.get_connection()
+
+        cursor = await self.database._list_collections(connection, {'name': self.name})
+
+        result = None
+
+        async with cursor as cursor:
+            async for doc in cursor:
+                result = doc
+                break
+
+        if not result:
+            return {}
+
+        options = result.get('options', {})
+        if 'create' in options:
+            del options['create']
+
+        return options
+
     async def drop(self):
         """Alias for :meth:`~aiomongo.database.Database.drop_collection`.
 
@@ -1299,6 +1418,18 @@ class Collection:
           >>> await db.drop_collection('foo')
         """
         await self.database.drop_collection(self.name)
+
+    async def _create(self, options: dict) -> None:
+        """Sends a create command with the given options.
+        """
+        cmd = SON([('create', self.name)])
+        if options:
+            if 'size' in options:
+                options['size'] = float(options['size'])
+            cmd.update(options)
+
+        connection = await self.database.client.get_connection()
+        await connection.command(self.database.name, cmd, read_preference=ReadPreference.PRIMARY)
 
     def __eq__(self, other):
         if isinstance(other, Collection):

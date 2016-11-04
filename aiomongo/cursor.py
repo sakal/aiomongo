@@ -5,7 +5,7 @@ from bson.code import Code
 from bson.codec_options import DEFAULT_CODEC_OPTIONS
 from bson.son import SON
 from pymongo import helpers
-from pymongo.common import validate_is_mapping
+from pymongo.common import validate_boolean, validate_is_mapping
 from pymongo.errors import InvalidOperation
 from pymongo.cursor import _QUERY_OPTIONS
 from pymongo.message import _GetMore, _Query
@@ -277,6 +277,76 @@ class Cursor:
         self.__comment = comment
         return self
 
+    async def count(self, with_limit_and_skip=False) -> int:
+        """Get the size of the results set for this query.
+
+        Returns the number of documents in the results set for this query. Does
+        not take :meth:`limit` and :meth:`skip` into account by default - set
+        `with_limit_and_skip` to ``True`` if that is the desired behavior.
+        Raises :class:`~pymongo.errors.OperationFailure` on a database error.
+
+        When used with MongoDB >= 2.6, :meth:`~count` uses any :meth:`~hint`
+        applied to the query. In the following example the hint is passed to
+        the count command:
+
+          await collection.find({'field': 'value'}).hint('field_1').count()
+
+        The :meth:`count` method obeys the
+        :attr:`~aiomongo.collection.Collection.read_preference` of the
+        :class:`~aiomongo.collection.Collection` instance on which
+        :meth:`~aiomongo.collection.Collection.find` was called.
+
+        :Parameters:
+          - `with_limit_and_skip` (optional): take any :meth:`limit` or
+            :meth:`skip` that has been applied to this cursor into account when
+            getting the count
+        """
+        validate_boolean('with_limit_and_skip', with_limit_and_skip)
+        kwargs = {
+            'filter': self.__spec
+        }
+        if self.__max_time_ms is not None:
+            kwargs['max_time_ms'] = self.__max_time_ms
+        if self.__comment:
+            kwargs['comment'] = self.__comment
+
+        if self.__hint is not None:
+            kwargs['hint'] = self.__hint
+
+        if with_limit_and_skip:
+            if self.__limit:
+                kwargs['limit'] = self.__limit
+            if self.__skip:
+                kwargs['skip'] = self.__skip
+
+        return await self.__collection.count(**kwargs)
+
+    async def distinct(self, key: str) -> list:
+        """Get a list of distinct values for `key` among all documents
+        in the result set of this query.
+
+        Raises :class:`TypeError` if `key` is not an instance of :class:`str`
+
+        The :meth:`distinct` method obeys the
+        :attr:`~aiomongo.collection.Collection.read_preference` of the
+        :class:`~aiomongo.collection.Collection` instance on which
+        :meth:`~aiomongo.collection.Collection.find` was called.
+
+        :Parameters:
+          - `key`: name of key for which we want to get the distinct values
+
+        .. seealso:: :meth:`aiomongo.collection.Collection.distinct`
+        """
+        options = {}
+        if self.__spec:
+            options['query'] = self.__spec
+        if self.__max_time_ms is not None:
+            options['maxTimeMS'] = self.__max_time_ms
+        if self.__comment:
+            options['$comment'] = self.__comment
+
+        return await self.__collection.distinct(key, **options)
+
     async def explain(self) -> dict:
         """Returns an explain plan record for this cursor.
 
@@ -488,6 +558,15 @@ class Cursor:
         keys = helpers._index_list(key_or_list, direction)
         self.__ordering = helpers._index_document(keys)
         return self
+
+    async def to_list(self) -> List[dict]:
+        """ Fetches all data from cursor to in-memory list.
+        """
+        items = []
+        async with self:
+            async for item in self:
+                items.append(item)
+        return items
 
     def where(self, code: Union[str, Code]) -> 'Cursor':
         """Adds a $where clause to this query.
