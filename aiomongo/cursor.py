@@ -1,6 +1,8 @@
+import copy
 from collections import deque
 from typing import Optional, Union, List
 
+from bson import RE_TYPE
 from bson.code import Code
 from bson.codec_options import DEFAULT_CODEC_OPTIONS
 from bson.son import SON
@@ -15,10 +17,11 @@ import aiomongo
 
 
 class Cursor:
+
     def __init__(self, collection: 'aiomongo.Collection',
-                 filter: dict, projection: Optional[Union[dict, list]],
-                 skip: int, limit: int, sort: List[tuple], modifiers: Optional[dict],
-                 batch_size: int = 0, no_cursor_timeout: bool = False) -> None:
+                 filter: Optional[dict] = None, projection: Optional[Union[dict, list]] = None,
+                 skip: int = 0, limit: int = 0, sort: Optional[List[tuple]] = None,
+                 modifiers: Optional[dict] = None, batch_size: int = 0, no_cursor_timeout: bool = False) -> None:
 
         spec = filter
         if spec is None:
@@ -133,6 +136,58 @@ class Cursor:
         if self.__retrieved or self.__id is not None:
             raise InvalidOperation('cannot set options after executing query')
 
+    def _clone(self, deepcopy: bool=True) -> 'Cursor':
+        """Internal clone helper."""
+        clone = self._clone_base()
+        values_to_clone = ('spec', 'projection', 'skip', 'limit',
+                           'max_time_ms', 'max_await_time_ms', 'comment',
+                           'max', 'min', 'ordering', 'explain', 'hint',
+                           'batch_size', 'max_scan', 'manipulate',
+                           'query_flags', 'modifiers')
+        data = dict((k, v) for k, v in self.__dict__.items()
+                    if k.startswith('_Cursor__') and k[9:] in values_to_clone)
+        if deepcopy:
+            data = self._deepcopy(data)
+        clone.__dict__.update(data)
+        return clone
+
+    def _clone_base(self) -> 'Cursor':
+        """Creates an empty Cursor object for information to be copied into.
+        """
+        return Cursor(self.__collection)
+
+    def _deepcopy(self, x, memo=None):
+        """Deepcopy helper for the data dictionary or list.
+
+        Regular expressions cannot be deep copied but as they are immutable we
+        don't have to copy them when cloning.
+        """
+        if not hasattr(x, 'items'):
+            y, is_list, iterator = [], True, enumerate(x)
+        else:
+            y, is_list, iterator = {}, False, x.items()
+
+        if memo is None:
+            memo = {}
+        val_id = id(x)
+        if val_id in memo:
+            return memo.get(val_id)
+        memo[val_id] = y
+
+        for key, value in iterator:
+            if isinstance(value, (dict, list)) and not isinstance(value, SON):
+                value = self._deepcopy(value, memo)
+            elif not isinstance(value, RE_TYPE):
+                value = copy.deepcopy(value, memo)
+
+            if is_list:
+                y.append(value)
+            else:
+                if not isinstance(key, RE_TYPE):
+                    key = copy.deepcopy(key, memo)
+                y[key] = value
+        return y
+
     async def __anext__(self) -> dict:
 
         if len(self.__data):
@@ -230,11 +285,45 @@ class Cursor:
     async def __aexit__(self, *exc) -> None:
         await self.close()
 
+    def __copy__(self):
+        """Support function for `copy.copy()`.
+        """
+        return self._clone(deepcopy=False)
+
+    def __deepcopy__(self, memo):
+        """Support function for `copy.deepcopy()`.
+        """
+        return self._clone(deepcopy=True)
+
     @property
     def retrieved(self) -> int:
         """The number of documents retrieved so far.
         """
         return self.__retrieved
+
+    def add_option(self, mask: int):
+        """Set arbitrary query flags using a bitmask.
+
+        To set the tailable flag:
+        cursor.add_option(2)
+        """
+        if not isinstance(mask, int):
+            raise TypeError('mask must be an int')
+        self.__check_okay_to_chain()
+
+        self.__query_flags |= mask
+        return self
+
+    @property
+    def alive(self) -> bool:
+        """Does this cursor have the potential to return more data?
+
+        .. note:: Even if :attr:`alive` is True, getting next document can raise
+          :exc:`StopAsyncIteration`. :attr:`alive` can also be True while iterating
+          a cursor from a failed server. In this case :attr:`alive` will
+          return False fail of retrieving the next batch of results from the server.
+        """
+        return bool(len(self.__data) or (not self.__killed))
 
     def batch_size(self, batch_size: int) -> 'Cursor':
         """Limits the number of documents returned in one batch. Each batch
@@ -263,6 +352,16 @@ class Cursor:
 
         self.__batch_size = batch_size
         return self
+
+    def clone(self):
+        """Get a clone of this cursor.
+
+        Returns a new Cursor instance with options matching those that have
+        been set on the current instance. The clone will be completely
+        unevaluated, even if the current instance has been partially or
+        completely evaluated.
+        """
+        return self._clone(True)
 
     def comment(self, comment: Union[str, dict]) -> 'Cursor':
         """Adds a 'comment' to the cursor.
@@ -302,24 +401,24 @@ class Cursor:
             getting the count
         """
         validate_boolean('with_limit_and_skip', with_limit_and_skip)
-        kwargs = {
-            'filter': self.__spec
-        }
+
+        cmd = SON([('count', self.__collection.name),
+                   ('query', self.__spec)])
         if self.__max_time_ms is not None:
-            kwargs['max_time_ms'] = self.__max_time_ms
+            cmd['maxTimeMS'] = self.__max_time_ms
         if self.__comment:
-            kwargs['comment'] = self.__comment
+            cmd['$comment'] = self.__comment
 
         if self.__hint is not None:
-            kwargs['hint'] = self.__hint
+            cmd['hint'] = self.__hint
 
         if with_limit_and_skip:
             if self.__limit:
-                kwargs['limit'] = self.__limit
+                cmd['limit'] = self.__limit
             if self.__skip:
-                kwargs['skip'] = self.__skip
+                cmd['skip'] = self.__skip
 
-        return await self.__collection.count(**kwargs)
+        return await self.__collection._count(cmd)
 
     async def distinct(self, key: str) -> list:
         """Get a list of distinct values for `key` among all documents
@@ -352,13 +451,18 @@ class Cursor:
 
         .. mongodoc:: explain
         """
-        self.__explain = True
+
+        c = self.clone()
+        c.__explain = True
 
         # always use a hard limit for explains
-        if self.__limit:
-            self.__limit = -abs(self.__limit)
+        if c.__limit:
+            c.__limit = -abs(self.__limit)
 
-        return await self.__anext__()
+        async for expl in c:
+            return expl
+
+        return None
 
     def hint(self, index: Union[str, List[tuple]]) -> 'Cursor':
         """Adds a 'hint', telling Mongo the proper index to use for the query.
@@ -372,7 +476,7 @@ class Cursor:
         already been used.
 
         `index` should be an index as passed to
-        :meth:`~pymongo.collection.Collection.create_index`
+        :meth:`~aiomongo.collection.Collection.create_index`
         (e.g. ``[('field', ASCENDING)]``) or the name of the index.
         If `index` is ``None`` any existing hint for this query is
         cleared. The last hint applied to this cursor takes precedence

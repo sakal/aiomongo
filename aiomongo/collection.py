@@ -145,23 +145,7 @@ class Collection:
 
         return CommandCursor(connection, self, cursor).batch_size(batch_size or 0)
 
-    async def count(self, filter: Optional[dict] = None, hint: Optional[Union[str, List[Tuple]]] = None,
-                    limit: Optional[int] = None, skip: Optional[int] = None, max_time_ms: Optional[int] = None,
-                    comment: Union[str, dict] = None) -> int:
-        cmd = SON([('count', self.name)])
-        if filter is not None:
-            cmd['query'] = filter
-        if hint is not None and not isinstance(hint, str):
-            cmd['hint'] = helpers._index_document(hint)
-        if limit is not None:
-            cmd['limit'] = limit
-        if skip is not None:
-            cmd['skip'] = skip
-        if max_time_ms is not None:
-            cmd['maxTimeMS'] = max_time_ms
-        if comment is not None:
-            cmd['$comment'] = comment
-
+    async def _count(self, cmd: SON) -> int:
         connection = await self.database.client.get_connection()
 
         result = await connection.command(
@@ -173,6 +157,28 @@ class Collection:
             return 0
 
         return int(result["n"])
+
+    async def count(self, filter: Optional[dict] = None, hint: Optional[Union[str, List[Tuple]]] = None,
+                    limit: Optional[int] = None, skip: Optional[int] = None, max_time_ms: Optional[int] = None,
+                    comment: Union[str, dict] = None) -> int:
+        cmd = SON([('count', self.name)])
+        if filter is not None:
+            cmd['query'] = filter
+        if hint is not None:
+            if isinstance(hint, str):
+                cmd['hint'] = hint
+            else:
+                cmd['hint'] = helpers._index_document(hint)
+        if limit is not None:
+            cmd['limit'] = limit
+        if skip is not None:
+            cmd['skip'] = skip
+        if max_time_ms is not None:
+            cmd['maxTimeMS'] = max_time_ms
+        if comment is not None:
+            cmd['$comment'] = comment
+
+        return await self._count(cmd)
 
     async def create_index(self, keys: Union[str, List[Tuple]], **kwargs) -> str:
         """Creates an index on this collection.
@@ -902,7 +908,7 @@ class Collection:
         """Perform a map/reduce operation on this collection.
 
         If `full_response` is ``False`` (default) returns a
-        :class:`~pymongo.collection.Collection` instance containing
+        :class:`~aiomongo.collection.Collection` instance containing
         the results of the operation. Otherwise, returns the full
         response from the server to the `map reduce command`_.
 
@@ -1213,7 +1219,7 @@ class Collection:
 
         .. warning:: Starting in PyMongo 3.2, this command uses the
            :class:`~pymongo.write_concern.WriteConcern` of this
-           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           :class:`~aiomongo.collection.Collection` when connected to MongoDB >=
            3.2. Note that using an elevated write concern with this command may
            be slower compared to using the default write concern.
 
@@ -1275,7 +1281,7 @@ class Collection:
 
         .. warning:: Starting in PyMongo 3.2, this command uses the
            :class:`~pymongo.write_concern.WriteConcern` of this
-           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           :class:`~aiomongo.collection.Collection` when connected to MongoDB >=
            3.2. Note that using an elevated write concern with this command may
            be slower compared to using the default write concern.
 
@@ -1370,7 +1376,7 @@ class Collection:
 
         .. warning:: Starting in PyMongo 3.2, this command uses the
            :class:`~pymongo.write_concern.WriteConcern` of this
-           :class:`~pymongo.collection.Collection` when connected to MongoDB >=
+           :class:`~aiomongo.collection.Collection` when connected to MongoDB >=
            3.2. Note that using an elevated write concern with this command may
            be slower compared to using the default write concern.
 
@@ -1384,7 +1390,7 @@ class Collection:
         """Get the options set on this collection.
 
         Returns a dictionary of options and their values - see
-        :meth:`~pymongo.database.Database.create_collection` for more
+        :meth:`~aiomongo.database.Database.create_collection` for more
         information on the possible options. Returns an empty
         dictionary if the collection has not been created yet.
         """

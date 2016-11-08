@@ -13,7 +13,7 @@ setup(
     install_requires=['pymongo>=3.3'],
     license='Apache License, Version 2.0',
     include_package_data=True,
-    tests_require=['pytest==3.0.3', 'pytest-asyncio==0.5.0'],
+    tests_require=['pytest==3.0.3', 'pytest-asyncio==0.5.0', 'coverage'],
     classifiers=[
         'Intended Audience :: Developers',
         'License :: OSI Approved :: Apache Software License',
