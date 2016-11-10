@@ -1,0 +1,13 @@
+ version: '2'
+ services:
+   db:
+     image: mongo:3.2
+   tests:
+     build: .
+     command: py.test /code/tests
+     volumes:
+       - .:/code
+     depends_on:
+       - db
+     environment:
+       - DB_IP=db
