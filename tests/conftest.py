@@ -3,11 +3,11 @@ import os
 import pytest
 
 import aiomongo
-from .version import Version
+from tests.version import Version
 
 
-HOST = os.getenv('DB_IP', 'localhost')
-PORT = int(os.getenv('DB_PORT', 27017))
+HOST = os.getenv('MONGO_HOST', 'localhost')
+PORT = int(os.getenv('MONGO_PORT', 27017))
 
 
 @pytest.fixture(scope='function')

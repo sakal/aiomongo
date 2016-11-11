@@ -171,7 +171,7 @@ class Bulk:
         # Save space for message length and request id
         buf.write(_ZERO_64)
         # responseTo, opCode
-        buf.write(b"\x00\x00\x00\x00\xd4\x07\x00\x00")
+        buf.write(b'\x00\x00\x00\x00\xd4\x07\x00\x00')
         # No options
         buf.write(_ZERO_32)
         # Namespace as C string

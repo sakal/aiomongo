@@ -3,11 +3,31 @@
    db:
      image: mongo:3.2
    tests:
-     build: .
-     command: py.test /code/tests
+     build:
+       context: .
+     image: aiomongo
+     command: py.test /opt/project/tests
+     container_name: aiomongo
      volumes:
-       - .:/code
+       - .:/opt/project
      depends_on:
        - db
+     working_dir: /opt/project
      environment:
-       - DB_IP=db
+       - MONGO_HOST=db
+       - PYTHONPATH=/opt/project
+
+   benchmarks:
+     build:
+       context: .
+     image: aiomongo
+     command: py.test /opt/project/benchmark --benchmark-json=benchmark.json --benchmark-warmup=on --benchmark-warmup-iterations=10
+     container_name: aiomongo
+     volumes:
+       - .:/opt/project
+     depends_on:
+       - db
+     working_dir: /opt/project
+     environment:
+       - MONGO_HOST=db
+       - PYTHONPATH=/opt/project

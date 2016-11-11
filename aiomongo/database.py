@@ -197,7 +197,7 @@ class Database:
     async def create_collection(self, name, codec_options=None,
                                 read_preference=None, write_concern=None,
                                 read_concern=None, **kwargs):
-        """Create a new :class:`~pymongo.collection.Collection` in this
+        """Create a new :class:`~aiomongo.collection.Collection` in this
         database.
 
         Normally collection creation is automatic. This method should
@@ -239,7 +239,7 @@ class Database:
 
         """
         if name in await self.collection_names():
-            raise CollectionInvalid("collection %s already exists" % name)
+            raise CollectionInvalid('collection {} already exists'.format(name))
 
         coll = Collection(self, name, read_preference, read_concern,
                           codec_options, write_concern)
@@ -267,10 +267,10 @@ class Database:
                        read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
                        write_concern: Optional[WriteConcern] = None,
                        read_concern: Optional[ReadConcern] = None):
-        """Get a :class:`~pymongo.collection.Collection` with the given name
+        """Get a :class:`~aiomongo.collection.Collection` with the given name
         and options.
 
-        Useful for creating a :class:`~pymongo.collection.Collection` with
+        Useful for creating a :class:`~aiomongo.collection.Collection` with
         different codec options, read preference, and/or write concern from
         this :class:`Database`.
 
@@ -569,7 +569,7 @@ class Database:
           - `dbref`: the reference
           - `**kwargs` (optional): any additional keyword arguments
             are the same as the arguments to
-            :meth:`~pymongo.collection.Collection.find`.
+            :meth:`~aiomongo.collection.Collection.find`.
         """
         if not isinstance(dbref, DBRef):
             raise TypeError('cannot dereference a {}'.format(type(dbref)))
