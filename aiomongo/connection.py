@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import struct
-from typing import List, Optional, Union
+from typing import List, MutableMapping, Optional, Union
 
 from bson import DEFAULT_CODEC_OPTIONS
 from bson.codec_options import CodecOptions
@@ -159,7 +159,7 @@ class Connection:
                       read_preference: Optional[Union[_ALL_READ_PREFERENCES]] = None,
                       codec_options: Optional[CodecOptions] = None, check: bool = True,
                       allowable_errors: Optional[List[str]] = None, check_keys: bool = False,
-                      read_concern: ReadConcern = DEFAULT_READ_CONCERN):
+                      read_concern: ReadConcern = DEFAULT_READ_CONCERN) -> MutableMapping:
 
         if self.max_wire_version < 4 and not read_concern.ok_for_legacy:
             raise ConfigurationError(
@@ -228,7 +228,7 @@ class Connection:
             request_id, data = msg
             return request_id, data, 0
 
-    async def read_loop(self):
+    async def read_loop(self) -> None:
         while True:
             try:
                 await self._read_loop_step()

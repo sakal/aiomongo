@@ -99,7 +99,7 @@ class AioMongoClient:
             self, name, read_preference, read_concern,
             codec_options, write_concern)
 
-    async def drop_database(self, name_or_database: Union[str, Database]):
+    async def drop_database(self, name_or_database: Union[str, Database]) -> None:
         """Drop a database.
 
         Raises :class:`TypeError` if `name_or_database` is not an instance of

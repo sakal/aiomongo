@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, List, Optional, Union
+from typing import Any, List, MutableMapping, Optional, Union
 
 from bson.codec_options import CodecOptions, DEFAULT_CODEC_OPTIONS
 from bson.dbref import DBRef
@@ -73,7 +73,7 @@ class Database:
     def __str__(self) -> str:
         return self.name
 
-    def __eq__(self, other):
+    def __eq__(self, other: 'Database') -> bool:
         if isinstance(other, Database):
             return (self.client == other.client and
                     self.name == other.name)
@@ -82,7 +82,7 @@ class Database:
     async def _command(self, connection: 'aiomongo.Connection', command: Union[str, dict], value: Any=1,
                        check: bool = True, allowable_errors: Optional[List[str]] = None,
                        read_preference: Union[_ALL_READ_PREFERENCES] = ReadPreference.PRIMARY,
-                       codec_options: CodecOptions = DEFAULT_CODEC_OPTIONS, **kwargs):
+                       codec_options: CodecOptions = DEFAULT_CODEC_OPTIONS, **kwargs) -> MutableMapping:
         """Internal command helper."""
         if isinstance(command, str):
             command = SON([(command, value)])
@@ -555,7 +555,7 @@ class Database:
             cmd['writeConcern'] = self.write_concern.document
         await self.command(cmd)
 
-    async def dereference(self, dbref: DBRef, **kwargs) -> dict:
+    async def dereference(self, dbref: DBRef, **kwargs) -> MutableMapping:
         """Dereference a :class:`~bson.dbref.DBRef`, getting the
         document it points to.
 

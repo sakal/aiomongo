@@ -1,6 +1,6 @@
 import copy
 from collections import deque
-from typing import Optional, Union, List
+from typing import List, MutableMapping, Optional, Union
 
 from bson import RE_TYPE
 from bson.code import Code
@@ -188,7 +188,7 @@ class Cursor:
                 y[key] = value
         return y
 
-    async def __anext__(self) -> dict:
+    async def __anext__(self) -> MutableMapping:
 
         if len(self.__data):
             return self.__data.popleft()
@@ -285,12 +285,12 @@ class Cursor:
     async def __aexit__(self, *exc) -> None:
         await self.close()
 
-    def __copy__(self):
+    def __copy__(self) -> 'Cursor':
         """Support function for `copy.copy()`.
         """
         return self._clone(deepcopy=False)
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo) -> 'Cursor':
         """Support function for `copy.deepcopy()`.
         """
         return self._clone(deepcopy=True)
@@ -301,7 +301,7 @@ class Cursor:
         """
         return self.__retrieved
 
-    def add_option(self, mask: int):
+    def add_option(self, mask: int) -> 'Cursor':
         """Set arbitrary query flags using a bitmask.
 
         To set the tailable flag:
@@ -353,7 +353,7 @@ class Cursor:
         self.__batch_size = batch_size
         return self
 
-    def clone(self):
+    def clone(self) -> 'Cursor':
         """Get a clone of this cursor.
 
         Returns a new Cursor instance with options matching those that have
@@ -446,7 +446,7 @@ class Cursor:
 
         return await self.__collection.distinct(key, **options)
 
-    async def explain(self) -> dict:
+    async def explain(self) -> MutableMapping:
         """Returns an explain plan record for this cursor.
 
         .. mongodoc:: explain
@@ -663,7 +663,7 @@ class Cursor:
         self.__ordering = helpers._index_document(keys)
         return self
 
-    async def to_list(self) -> List[dict]:
+    async def to_list(self) -> List[MutableMapping]:
         """ Fetches all data from cursor to in-memory list.
         """
         items = []

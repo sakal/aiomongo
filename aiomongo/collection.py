@@ -265,7 +265,7 @@ class Collection:
         await connection.command(self.database.name, cmd, ReadPreference.PRIMARY, self.codec_options)
         return name
 
-    async def create_indexes(self, indexes: List[IndexModel]):
+    async def create_indexes(self, indexes: List[IndexModel]) -> List[str]:
         """Create one or more indexes on this collection.
 
           >>> from pymongo import IndexModel, ASCENDING, DESCENDING
@@ -339,7 +339,7 @@ class Collection:
             read_concern=self.read_concern
         ))['values']
 
-    async def drop_index(self, index_or_name):
+    async def drop_index(self, index_or_name: Union[str, list]) -> None:
         """Drops the specified index on this collection.
 
         Can be used on non-existant collections or collections with no
@@ -373,7 +373,7 @@ class Collection:
             allowable_errors=['ns not found']
         )
 
-    async def drop_indexes(self):
+    async def drop_indexes(self) -> None:
         """Drops all indexes on this collection.
 
         Can be used on non-existant collections or collections with no indexes.
@@ -445,7 +445,7 @@ class Collection:
 
     async def find_one(self, filter: Optional[Union[dict, Any]] = None, projection: Optional[Union[dict, list]] = None,
                        skip: int = 0, sort: Optional[List[Tuple]] = None, max_time_ms: Optional[int] = None,
-                       modifiers: Optional[dict] = None) -> Optional[dict]:
+                       modifiers: Optional[dict] = None) -> Optional[MutableMapping]:
         """Get a single document from the database.
 
         All arguments to :meth:`find` are also valid arguments for
@@ -477,7 +477,7 @@ class Collection:
         return None
 
     async def group(self, key: Optional[Union[List[str], str, Code]], condition: dict, initial: int, reduce: str,
-                    finalize: Optional[str] = None, **kwargs):
+                    finalize: Optional[str] = None, **kwargs) -> List[MutableMapping]:
         """Perform a query similar to an SQL *group by* operation.
 
         Returns an array of grouped items.
@@ -904,7 +904,7 @@ class Collection:
         )
 
     async def map_reduce(self, map: Code, reduce: Code, out: str,
-                         full_response: bool = False, **kwargs) -> Union[dict, 'Collection']:
+                         full_response: bool = False, **kwargs) -> Union[MutableMapping, 'Collection']:
         """Perform a map/reduce operation on this collection.
 
         If `full_response` is ``False`` (default) returns a
@@ -966,7 +966,7 @@ class Collection:
             return self.database[response['result']]
 
     async def inline_map_reduce(self, map: Code, reduce: Code, full_response: bool = False,
-                                **kwargs) -> Union[list, dict]:
+                                **kwargs) -> Union[list, MutableMapping]:
         """Perform an inline map/reduce operation on this collection.
 
         Perform the map/reduce operation on the server in RAM. A result
@@ -1086,7 +1086,7 @@ class Collection:
         ``"name"`` keys, which are cleaned. Example output might look
         like this:
 
-        >>> await db.test.ensure_index("x", unique=True)
+        >>> await db.test.ensure_index('x', unique=True)
         'x_1'
         >>> await db.test.index_information()
         {'_id_': {'key': [('_id', 1)]},
@@ -1142,7 +1142,7 @@ class Collection:
 
     async def __find_and_modify(self, filter: dict, projection: Optional[Union[list, dict]],
                                 sort: Optional[List[tuple]], upsert: Optional[bool] = None,
-                                return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+                                return_document: bool = ReturnDocument.BEFORE, **kwargs) -> MutableMapping:
         """Internal findAndModify helper."""
         common.validate_is_mapping('filter', filter)
         if not isinstance(return_document, bool):
@@ -1173,7 +1173,7 @@ class Collection:
         return out.get('value')
 
     async def find_one_and_delete(self, filter: dict, projection: Optional[Union[list, dict]] = None,
-                                  sort: Optional[List[tuple]] = None, **kwargs) -> dict:
+                                  sort: Optional[List[tuple]] = None, **kwargs) -> MutableMapping:
         """Finds a single document and deletes it, returning the document.
 
           >>> await db.test.count({'x': 1})
@@ -1230,7 +1230,7 @@ class Collection:
     async def find_one_and_replace(self, filter: dict, replacement: dict,
                                    projection: Optional[Union[list, dict]] = None,
                                    sort: Optional[List[tuple]] = None, upsert: bool = False,
-                                   return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+                                   return_document: bool = ReturnDocument.BEFORE, **kwargs) -> MutableMapping:
         """Finds a single document and replaces it, returning either the
         original or the replaced document.
 
@@ -1294,7 +1294,7 @@ class Collection:
     async def find_one_and_update(self, filter: dict, update: dict,
                                   projection: Optional[Union[list, dict]] = None,
                                   sort: Optional[List[tuple]] = None, upsert: bool = False,
-                                  return_document: bool = ReturnDocument.BEFORE, **kwargs) -> dict:
+                                  return_document: bool = ReturnDocument.BEFORE, **kwargs) -> MutableMapping:
         """Finds a single document and updates it, returning either the
         original or the updated document.
 
@@ -1386,7 +1386,7 @@ class Collection:
         return await self.__find_and_modify(filter, projection,
                                             sort, upsert, return_document, **kwargs)
 
-    async def options(self) -> dict:
+    async def options(self) -> MutableMapping:
         """Get the options set on this collection.
 
         Returns a dictionary of options and their values - see
@@ -1401,7 +1401,7 @@ class Collection:
 
         result = None
 
-        async with cursor as cursor:
+        async with cursor:
             async for doc in cursor:
                 result = doc
                 break
@@ -1415,7 +1415,7 @@ class Collection:
 
         return options
 
-    async def drop(self):
+    async def drop(self) -> None:
         """Alias for :meth:`~aiomongo.database.Database.drop_collection`.
 
         The following two calls are equivalent:
@@ -1437,13 +1437,13 @@ class Collection:
         connection = await self.database.client.get_connection()
         await connection.command(self.database.name, cmd, read_preference=ReadPreference.PRIMARY)
 
-    def __eq__(self, other):
+    def __eq__(self, other: 'Collection') -> bool:
         if isinstance(other, Collection):
             return (self.database == other.database and
                     self.name == other.name)
         return NotImplemented
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> 'Collection':
         """Get a sub-collection of this collection by name.
 
         Raises InvalidName if an invalid collection name is used.
@@ -1459,7 +1459,7 @@ class Collection:
                     name, full_name, full_name))
         return self.__getitem__(name)
 
-    def __getitem__(self, name):
+    def __getitem__(self, name: str) -> 'Collection':
         full_name = '{}.{}'.format(self.name, name)
         return Collection(self.database, full_name)
 
