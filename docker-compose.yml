@@ -21,7 +21,7 @@
      build:
        context: .
      image: aiomongo
-     command: py.test /opt/project/benchmark --benchmark-json=benchmark.json --benchmark-warmup=on --benchmark-warmup-iterations=10
+     command: bash -c "py.test ./benchmark --benchmark-json=benchmark.json --benchmark-warmup=on --benchmark-warmup-iterations=10 && python ./benchmark/plotbench.py"
      container_name: aiomongo
      volumes:
        - .:/opt/project

@@ -1,5 +1,12 @@
-#!/usr/bin/env python
+import sys
 from setuptools import setup
+
+if sys.version_info < (3, 5, 2):
+    raise RuntimeError('aiomongo requires Python 3.5.2+')
+
+
+install_requires = ['pymongo>=3.3']
+tests_require = install_requires + ['pytest', 'pytest-asyncio'],
 
 setup(
     name='aiomongo',
@@ -10,10 +17,10 @@ setup(
     url='https://github.com/ZeoAlliance/aiomongo',
     keywords=['mongo', 'mongodb', 'pymongo', 'aiomongo'],
     packages=['aiomongo'],
-    install_requires=['pymongo>=3.3'],
+    install_requires=install_requires,
     license='Apache License, Version 2.0',
     include_package_data=True,
-    tests_require=['pytest==3.0.3', 'pytest-asyncio==0.5.0', 'coverage'],
+    tests_require=tests_require,
     classifiers=[
         'Intended Audience :: Developers',
         'License :: OSI Approved :: Apache Software License',
