@@ -1,5 +1,7 @@
 # Asynchronous MongoDB client based on asyncio.
 
+[![Build Status](https://travis-ci.org/ZeoAlliance/aiomongo.svg?branch=master)](https://travis-ci.org/ZeoAlliance/aiomongo)
+
 Aiomongo is a rewrite of [Pymongo](https://github.com/mongodb/mongo-python-driver) driver that uses [asyncio](https://docs.python.org/3/library/asyncio.html) for networking. The reason why
 this client was written is that an alternative [Motor](https://github.com/mongodb/motor) implementation uses thread pool
 to avoid blocking on network operations. But it appears (see benchmarks below) to work slower than pure asyncio implementation.
