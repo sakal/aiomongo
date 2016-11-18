@@ -47,7 +47,7 @@ async def main(loop):
     await db.items.delete_one({'x': 1})
     
     client.close()
-    client.wait_closed()
+    await client.wait_closed()
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
