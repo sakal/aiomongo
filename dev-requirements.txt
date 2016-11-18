@@ -1,5 +1,5 @@
 pymongo >= 3.3
-pytest
+pytest == 3.0.4
 pytest-asyncio
 pytest-benchmark
 matplotlib
