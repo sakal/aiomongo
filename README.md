@@ -47,7 +47,7 @@ async def main(loop):
     await db.items.delete_one({'x': 1})
     
     client.close()
-    client.wait_closed()
+    await client.wait_closed()
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
@@ -98,6 +98,14 @@ Or install dependencies from dev-requirements.txt yourself and from the project 
 py.test ./benchmark --benchmark-json=benchmark.json --benchmark-warmup=on --benchmark-warmup-iterations=10 && python ./benchmark/plotbench.py
 ```
 
-### Sample results:
+### Sample results (lower is better):
 
-TBD
+#### find_one results
+
+![find_one results](/benchmark/test_find_one.png?raw=true "find_one")
+
+#### Iterating cursor with find
+![find results](/benchmark/test_find.png?raw=true "find")
+
+#### insert_one results
+![insert_one results](/benchmark/test_insert_one.png?raw=true "find")
