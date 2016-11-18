@@ -1,0 +1,39 @@
+sudo: false
+services:
+  - mongodb
+
+
+addons:
+  apt:
+    sources:
+    - mongodb-3.2-precise
+    packages:
+    - mongodb-org-server
+
+os:
+  - linux
+
+python:
+  - 3.5
+  - '3.6-dev'
+  - 'nightly'
+
+matrix:
+  allow_failures:
+    - python: '3.6-dev'
+    - python: 'nightly'
+
+cache:
+  directories:
+    - $HOME/.cache/pip
+
+before_cache:
+  - rm -f $HOME/.cache/pip/log/debug.log
+
+install:
+  - pip install --upgrade pip wheel
+  - pip install --upgrade setuptools
+  - pip install -r dev-requirements.txt
+
+script:
+  - py.test ./tests
