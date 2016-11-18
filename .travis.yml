@@ -2,6 +2,12 @@ sudo: required
 services:
   - mongodb
 
+language: python
+
+python:
+  - 3.5
+  - '3.6-dev'
+  - 'nightly'
 
 addons:
   apt:
@@ -12,11 +18,6 @@ addons:
 
 os:
   - linux
-
-python:
-  - 3.5
-  - '3.6-dev'
-  - 'nightly'
 
 matrix:
   allow_failures:
